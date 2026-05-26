@@ -915,6 +915,360 @@ def print_summary(df_sum):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ASYMMETRIC BEAM STUDY
+# Demonstrates how |AF|² breaks centrosymmetry under realistic conditions:
+#   1. Phase steering   — complex per-element weights for off-zenith pointing
+#   2. Calibration errors — random phase (σ_φ=12°) + amplitude (σ_a=5%) errors
+#   3. E-W dipole element pattern  — P(l,m) = 1 − l²
+#   4. Survey sensitivity map — max sensitivity over 5×5 hemisphere grid
+# Focus: core 128×128 + 5 km outriggers (best configuration)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── asymmetric beam parameters ────────────────────────────────────────────────
+AB_CORE      = 128           # best core size for demonstration
+AB_DIST_KM   = 5.0           # best outrigger distance
+AB_N_GRID    = 256           # grid resolution (reduced for full per-element computation)
+AB_SIGMA_PHI = 12.0          # phase error RMS [degrees]
+AB_SIGMA_AMP = 0.05          # amplitude error RMS [fractional]
+AB_SEED      = 42
+
+# Survey pointing grid: 5×5, trimmed to visible hemisphere
+_g  = np.linspace(-0.55, 0.55, 5)
+_L0, _M0 = np.meshgrid(_g, _g)
+_mask     = _L0**2 + _M0**2 < 0.85**2
+AB_POINTINGS = list(zip(_L0[_mask].ravel(), _M0[_mask].ravel()))
+
+# Output subdirectory
+AB_PLOT = os.path.join(GT_PLOT, "asymmetric_beam")
+AB_CSV  = os.path.join(GT_CSV,  "asymmetric_beam")
+os.makedirs(AB_PLOT, exist_ok=True)
+os.makedirs(AB_CSV,  exist_ok=True)
+
+
+def ab_element_pattern(L, M):
+    """E-W dipole power pattern: P(l,m) = 1 − l²."""
+    return np.where(L**2 + M**2 <= 1.0, 1.0 - L**2, np.nan)
+
+
+def ab_steering_weights(pos_enu, l0, m0, freq_MHz):
+    """Per-element steering weights: w_k = exp(−ik·(x_k·l0 + y_k·m0))."""
+    k = 2 * np.pi * freq_MHz * 1e6 / C
+    return np.exp(-1j * k * (pos_enu[:, 0] * l0 + pos_enu[:, 1] * m0))
+
+
+def ab_calibration_weights(N, sigma_phi_deg=AB_SIGMA_PHI,
+                           sigma_amp=AB_SIGMA_AMP, seed=AB_SEED):
+    """
+    Per-element hardware errors (cable + receiver tolerances):
+      phase offset δφ_k ~ N(0, σ_φ²)   breaks Hermitian symmetry → true asymmetry
+      amplitude     a_k ~ N(1, σ_a²)   real errors alone preserve centrosymmetry
+    Combined weight: w_k = a_k · exp(iδφ_k)
+    """
+    rng = np.random.default_rng(seed)
+    phi = rng.normal(0.0, np.radians(sigma_phi_deg), N)
+    amp = np.clip(rng.normal(1.0, sigma_amp, N), 0.5, 1.5)
+    return amp * np.exp(1j * phi)
+
+
+def ab_compute_af(pos_enu, weights, freq_MHz, n_grid=AB_N_GRID):
+    """
+    Per-element weighted AF using the two-step matrix product:
+        AF[l,m] = (W·Φ_x)ᵀ · Φ_y
+    where Φ_x[k,i]=exp(ik·x_k·l_i), Φ_y[k,j]=exp(ik·y_k·m_j).
+    Memory ≈ 2 × N × n_grid × 16 B  (≈142 MB for N=17408, n_grid=256).
+    Returns l_arr, m_arr, B_norm where B_norm has shape (n_grid, n_grid).
+    """
+    k     = 2 * np.pi * freq_MHz * 1e6 / C
+    l_arr = np.linspace(-1.0, 1.0, n_grid)
+    m_arr = np.linspace(-1.0, 1.0, n_grid)
+    Phi_x = np.exp(1j * k * np.outer(pos_enu[:, 0], l_arr))  # (N, N_l)
+    Phi_y = np.exp(1j * k * np.outer(pos_enu[:, 1], m_arr))  # (N, N_m)
+    AF    = (weights[:, None] * Phi_x).T @ Phi_y              # (N_l, N_m)
+    B     = np.abs(AF) ** 2
+    B_norm = B / (B.max() + 1e-30)
+    L, M  = np.meshgrid(l_arr, m_arr, indexing="ij")
+    B_norm[L**2 + M**2 > 1.0] = np.nan
+    return l_arr, m_arr, B_norm                               # (N_l, N_m)
+
+
+def ab_build_configs():
+    """Build one 128×128 + 5 km config for each geometry."""
+    out_n   = CORE_OUT[AB_CORE]
+    cfgs    = {}
+    for geom in GEOMETRIES:
+        pos, centres = LAYOUT_FN[geom](AB_CORE, out_n, AB_DIST_KM)
+        cfgs[geom]   = dict(pos_enu=pos, N=len(pos))
+    return cfgs
+
+
+def ab_beam_evolution(cfgs):
+    """
+    Plot A — for each geometry: 3 rows × 4 columns.
+      Row 1: ideal zenith beam  (no steering, no errors)
+      Row 2: steered to (l0=0.30, m0=0.20)  [steering only]
+      Row 3: steered + calibration errors    [full realistic model]
+    All multiplied by E-W dipole element pattern.
+    """
+    print("\n── AB Plot A: Beam evolution (zenith → steered → errors) ──")
+    l0d, m0d = 0.30, 0.20
+
+    for geom, cfg in cfgs.items():
+        pos = cfg["pos_enu"]; N = cfg["N"]
+        cal = ab_calibration_weights(N)
+        fig, axes = plt.subplots(3, 4, figsize=(18, 13))
+        row_titles = [
+            "Ideal — zenith pointing  (centrosymmetric, no steering)",
+            f"Steered to (l₀={l0d}, m₀={m0d})  — no errors",
+            f"Steered + hardware errors  (σ_φ={AB_SIGMA_PHI}°, σ_a={AB_SIGMA_AMP*100:.0f}%)",
+        ]
+        for ci, (bl, fc) in enumerate(zip(BAND_LABELS, BAND_CTR)):
+            w_z = np.ones(N, dtype=complex)
+            w_s = ab_steering_weights(pos, l0d, m0d, fc)
+            w_e = cal * w_s
+            for ri, w in enumerate([w_z, w_s, w_e]):
+                l, m, B = ab_compute_af(pos, w, fc)
+                L, M    = np.meshgrid(l, m, indexing="ij")
+                EP      = ab_element_pattern(L, M)
+                B_full  = B * EP
+                B_dB    = 10 * np.log10(B_full / np.nanmax(B_full) + 1e-20)
+                ax = axes[ri, ci]
+                im = ax.pcolormesh(l, m, B_dB.T, vmin=-50, vmax=0,
+                                   cmap="inferno", shading="auto")
+                if ci == 3:
+                    plt.colorbar(im, ax=ax, label="dB", fraction=0.046)
+                ax.set_aspect("equal"); ax.tick_params(labelsize=6)
+                if ri == 0: ax.set_title(f"{bl} MHz", fontsize=8)
+                if ci == 0: ax.set_ylabel(row_titles[ri], fontsize=7.5)
+                if ri > 0:
+                    ax.plot(l0d, m0d, "w+", ms=8, mew=1.5)
+        fig.suptitle(f"Beam Pattern: Ideal → Steered → Errors\n"
+                     f"{GEOM_LABEL[geom]} | {AB_CORE}×{AB_CORE} + {AB_DIST_KM} km  "
+                     f"× E-W dipole  (white '+' = pointing dir.)",
+                     fontsize=11, fontweight="bold")
+        plt.tight_layout()
+        fig.savefig(os.path.join(AB_PLOT, f"beam_evolution_{geom}.png"), dpi=120)
+        plt.close(fig)
+        print(f"  Saved beam_evolution_{geom}.png")
+
+
+def ab_geometry_comparison(cfgs):
+    """
+    Plot B — 4 rows (geometries) × 4 cols (bands).
+    Two versions: clean steered beam, and steered + calibration errors.
+    Both include the E-W dipole element pattern.
+    """
+    print("\n── AB Plot B: All-geometry comparison (off-zenith, all bands) ──")
+    l0, m0 = 0.30, 0.20
+    for scenario, use_err in [("clean_steered", False), ("errors_steered", True)]:
+        fig, axes = plt.subplots(4, 4, figsize=(16, 16))
+        for ri, geom in enumerate(GEOMETRIES):
+            pos = cfgs[geom]["pos_enu"]; N = cfgs[geom]["N"]
+            cal = ab_calibration_weights(N) if use_err else np.ones(N, dtype=complex)
+            for ci, (bl, fc) in enumerate(zip(BAND_LABELS, BAND_CTR)):
+                w       = cal * ab_steering_weights(pos, l0, m0, fc)
+                l, m, B = ab_compute_af(pos, w, fc)
+                L, M    = np.meshgrid(l, m, indexing="ij")
+                EP      = ab_element_pattern(L, M)
+                BEP     = B * EP
+                B_dB    = 10 * np.log10(BEP / np.nanmax(BEP) + 1e-20)
+                ax = axes[ri, ci]
+                im = ax.pcolormesh(l, m, B_dB.T, vmin=-50, vmax=0,
+                                   cmap="inferno", shading="auto")
+                if ci == 3:
+                    plt.colorbar(im, ax=ax, fraction=0.046)
+                ax.plot(l0, m0, "w+", ms=7, mew=1.4)
+                ax.set_aspect("equal"); ax.tick_params(labelsize=6)
+                if ri == 0: ax.set_title(f"{bl} MHz", fontsize=9, fontweight="bold")
+                if ci == 0:
+                    ax.set_ylabel(GEOM_LABEL[geom], fontsize=9,
+                                  color=GEOM_COLOR[geom], fontweight="bold")
+        err_note = (f" + σ_φ={AB_SIGMA_PHI}°, σ_a={AB_SIGMA_AMP*100:.0f}%"
+                    if use_err else "")
+        fig.suptitle(f"All-Geometry Comparison — Steered (l₀=0.3, m₀=0.2){err_note}\n"
+                     f"{AB_CORE}×{AB_CORE} + {AB_DIST_KM} km  ×  E-W dipole",
+                     fontsize=11, fontweight="bold")
+        plt.tight_layout()
+        fig.savefig(os.path.join(AB_PLOT, f"geometry_comparison_{scenario}.png"), dpi=120)
+        plt.close(fig)
+        print(f"  Saved geometry_comparison_{scenario}.png")
+
+
+def ab_survey_map(cfgs):
+    """
+    Plot C — survey sensitivity map.
+    For each geometry, sweep {AB_POINTINGS} and record max(B × element_pattern)
+    at each sky pixel. Shows the sky coverage achievable with 30 MHz beam.
+    """
+    print(f"\n── AB Plot C: Survey sensitivity map ({len(AB_POINTINGS)} pointings, 30 MHz) ──")
+    fc  = 30.0
+    n_s = 128
+    rows = []
+    fig, axes = plt.subplots(2, 2, figsize=(12, 11))
+    axes = axes.ravel()
+
+    for gi, (geom, cfg) in enumerate(cfgs.items()):
+        pos = cfg["pos_enu"]; N = cfg["N"]
+        cal = ab_calibration_weights(N)
+        l_arr = np.linspace(-1, 1, n_s)
+        m_arr = np.linspace(-1, 1, n_s)
+        L, M  = np.meshgrid(l_arr, m_arr, indexing="ij")
+        EP    = ab_element_pattern(L, M)
+        smap  = np.zeros((n_s, n_s))
+
+        for l0, m0 in AB_POINTINGS:
+            w       = cal * ab_steering_weights(pos, l0, m0, fc)
+            _, _, B = ab_compute_af(pos, w, fc, n_s)
+            smap    = np.maximum(smap, np.nan_to_num(B * EP))
+
+        smap[L**2 + M**2 > 1] = np.nan
+        cov = np.sum(np.nan_to_num(smap) > 0.1) / np.sum(L**2 + M**2 < 1)
+        rows.append(dict(geometry=geom, n_pointings=len(AB_POINTINGS),
+                         mean_sensitivity=float(np.nanmean(smap)),
+                         coverage_fraction=float(cov)))
+
+        ax = axes[gi]
+        im = ax.pcolormesh(l_arr, m_arr, smap.T, vmin=0, vmax=1,
+                           cmap="plasma", shading="auto")
+        plt.colorbar(im, ax=ax, label="Max norm. sensitivity")
+        for l0p, m0p in AB_POINTINGS:
+            ax.plot(l0p, m0p, "w.", ms=3, alpha=0.5)
+        ax.set_title(f"{GEOM_LABEL[geom]}", fontsize=10,
+                     color=GEOM_COLOR[geom], fontweight="bold")
+        ax.set_xlabel("l"); ax.set_ylabel("m")
+        ax.set_aspect("equal"); ax.grid(True, alpha=0.2)
+
+    fig.suptitle(f"Survey Sensitivity Map — Max over {len(AB_POINTINGS)} pointings\n"
+                 f"(30 MHz, {AB_CORE}×{AB_CORE} + {AB_DIST_KM} km, "
+                 f"σ_φ={AB_SIGMA_PHI}°, σ_a={AB_SIGMA_AMP*100:.0f}%  ×  E-W dipole)\n"
+                 "Dots = pointing centres",
+                 fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    fig.savefig(os.path.join(AB_PLOT, "survey_sensitivity_map.png"), dpi=130)
+    plt.close(fig)
+    print("  Saved survey_sensitivity_map.png")
+
+    df = pd.DataFrame(rows)
+    df.to_csv(os.path.join(AB_CSV, "survey_metrics.csv"), index=False)
+    print("  Saved survey_metrics.csv")
+    return df
+
+
+def ab_symmetry_vs_pointing(cfgs):
+    """
+    Plot D — left-right symmetry error vs pointing offset from zenith.
+    Shows how quickly centrosymmetry breaks with steering angle,
+    and how calibration errors add an irreducible asymmetry floor.
+    """
+    print("\n── AB Plot D: Symmetry error vs pointing offset ──")
+    fc      = 30.0
+    offsets = np.linspace(0.0, 0.70, 12)
+    rows    = []
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for geom, cfg in cfgs.items():
+        pos = cfg["pos_enu"]; N = cfg["N"]
+        cal = ab_calibration_weights(N)
+        e_ideal, e_err = [], []
+
+        for off in offsets:
+            l0 = off * np.cos(np.radians(45))
+            m0 = off * np.sin(np.radians(45))
+            _, _, B_id = ab_compute_af(pos, ab_steering_weights(pos, l0, m0, fc), fc, 128)
+            _, _, B_er = ab_compute_af(pos, cal * ab_steering_weights(pos, l0, m0, fc), fc, 128)
+            B_id = np.nan_to_num(B_id); B_er = np.nan_to_num(B_er)
+            ei = float(np.max(np.abs(B_id - B_id[::-1, :])))
+            ee = float(np.max(np.abs(B_er - B_er[::-1, :])))
+            e_ideal.append(ei); e_err.append(ee)
+            rows.append(dict(geometry=geom, pointing_offset=float(off),
+                              err_LR_ideal=ei, err_LR_errors=ee))
+
+        theta = np.degrees(np.arcsin(np.clip(offsets, 0, 0.9999)))
+        ax.plot(theta, e_ideal, color=GEOM_COLOR[geom], ls="-",  lw=1.8,
+                label=f"{GEOM_LABEL[geom]} — ideal")
+        ax.plot(theta, e_err,   color=GEOM_COLOR[geom], ls="--", lw=1.8,
+                label=f"{GEOM_LABEL[geom]} + errors")
+
+    ax.axhline(0.05, color="grey", ls=":", lw=1.1, alpha=0.7,
+               label="5% — visually perceptible threshold")
+    ax.set_xlabel("Pointing offset from zenith [°]", fontsize=11)
+    ax.set_ylabel("Left-right symmetry error  max|B(l,m)−B(−l,m)|", fontsize=11)
+    ax.set_title(f"Symmetry Breaking vs Pointing Offset  (30 MHz, {AB_CORE}×{AB_CORE} + {AB_DIST_KM} km)\n"
+                 f"Solid = steering only  |  Dashed = steering + σ_φ={AB_SIGMA_PHI}°, σ_a={AB_SIGMA_AMP*100:.0f}%",
+                 fontsize=10)
+    ax.legend(fontsize=7.5, ncol=2); ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(os.path.join(AB_PLOT, "symmetry_vs_pointing.png"), dpi=130)
+    plt.close(fig)
+    print("  Saved symmetry_vs_pointing.png")
+
+    df = pd.DataFrame(rows)
+    df.to_csv(os.path.join(AB_CSV, "symmetry_vs_pointing.csv"), index=False)
+    print("  Saved symmetry_vs_pointing.csv")
+
+
+def ab_element_pattern_effect(cfgs):
+    """
+    Plot E — isotropic vs E-W dipole element pattern, for Y-shape and random.
+    Two rows: isotropic (|AF|² only) vs multiplied by P(l,m)=1−l².
+    """
+    print("\n── AB Plot E: Element pattern effect ──")
+    l0, m0 = 0.30, 0.20
+    for geom in ["y_shape", "random"]:
+        pos = cfgs[geom]["pos_enu"]; N = cfgs[geom]["N"]
+        cal = ab_calibration_weights(N)
+        fig, axes = plt.subplots(2, 4, figsize=(18, 9))
+        for ci, (bl, fc) in enumerate(zip(BAND_LABELS, BAND_CTR)):
+            w       = cal * ab_steering_weights(pos, l0, m0, fc)
+            l, m, B = ab_compute_af(pos, w, fc)
+            L, M    = np.meshgrid(l, m, indexing="ij")
+            EP      = ab_element_pattern(L, M)
+            panels  = [
+                (B,      "Isotropic element  (|AF|² only)"),
+                (B * EP, "× E-W dipole  P(l,m) = 1−l²"),
+            ]
+            for ri, (data, title) in enumerate(panels):
+                B_dB = 10 * np.log10(data / np.nanmax(data) + 1e-20)
+                ax   = axes[ri, ci]
+                im   = ax.pcolormesh(l, m, B_dB.T, vmin=-50, vmax=0,
+                                     cmap="inferno", shading="auto")
+                if ci == 3:
+                    plt.colorbar(im, ax=ax, fraction=0.046, label="dB")
+                ax.plot(l0, m0, "w+", ms=7, mew=1.4)
+                ax.set_aspect("equal"); ax.tick_params(labelsize=6)
+                if ri == 0: ax.set_title(f"{bl} MHz", fontsize=9, fontweight="bold")
+                if ci == 0: ax.set_ylabel(title, fontsize=8)
+        fig.suptitle(f"Element Pattern Effect — {GEOM_LABEL[geom]}\n"
+                     f"Row 1: isotropic  |  Row 2: ×E-W dipole  "
+                     f"(steered l₀=0.3,m₀=0.2 + errors)",
+                     fontsize=11, fontweight="bold")
+        plt.tight_layout()
+        fig.savefig(os.path.join(AB_PLOT, f"element_pattern_effect_{geom}.png"), dpi=120)
+        plt.close(fig)
+        print(f"  Saved element_pattern_effect_{geom}.png")
+
+
+def run_asymmetric_beam_study():
+    """Run the full asymmetric beam study on the best configuration."""
+    print("\n" + "="*70)
+    print("  ASYMMETRIC BEAM STUDY")
+    print(f"  Core {AB_CORE}×{AB_CORE} + {AB_DIST_KM} km outriggers  |  "
+          f"σ_φ={AB_SIGMA_PHI}°  σ_a={AB_SIGMA_AMP*100:.0f}%  |  "
+          f"{len(AB_POINTINGS)} survey pointings")
+    print("="*70)
+
+    cfgs = ab_build_configs()
+    ab_beam_evolution(cfgs)
+    ab_geometry_comparison(cfgs)
+    df_sv = ab_survey_map(cfgs)
+    ab_symmetry_vs_pointing(cfgs)
+    ab_element_pattern_effect(cfgs)
+
+    print("\n  Survey metrics:")
+    print(df_sv.to_string(index=False))
+    print(f"\n  Outputs: {AB_PLOT}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
@@ -949,6 +1303,9 @@ def main():
 
     # Print summary
     print_summary(df_sum)
+
+    # Asymmetric beam study
+    run_asymmetric_beam_study()
 
     print(f"\nAll outputs saved to:\n  {GT_PLOT}\n  {GT_CSV}")
     print("ALO Geometry Trade-off Study — Done")
