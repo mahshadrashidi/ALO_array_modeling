@@ -1,0 +1,930 @@
+\documentclass[12pt,a4paper]{article}
+
+% Packages
+\usepackage[margin=2.5cm,headheight=15pt]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{float}
+\usepackage{microtype}
+\usepackage{parskip}
+
+% Header / footer
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small ALO Array Configuration Study}
+\rhead{\small M. Rashidy, 2026}
+\cfoot{\thepage}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!70!black,
+  urlcolor=blue!70!black,
+  citecolor=blue!70!black
+}
+
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.7em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.5em}{}
+
+\graphicspath{
+  {outputs/plots/}
+  {outputs/plots/geometry_tradeoff/}
+  {outputs/plots/geometry_tradeoff/cross_config/}
+  {outputs/plots/geometry_tradeoff/asymmetric_beam/}
+}
+
+% ──────────────────────────────────────────────────────────────────
+\begin{document}
+
+\begin{titlepage}
+  \centering
+  \vspace*{2cm}
+  {\LARGE\bfseries Array Configuration Trade-off Study\\[0.5em]
+   for the Array on the Lunar Outpost (ALO)}\par
+  \vspace{1.5cm}
+  {\large Mahshad Rashidy}\par
+  \vspace{0.5cm}
+  {\normalsize Department of Astrophysics / Thesis Project}\par
+  \vspace{0.5cm}
+  {\normalsize \today}\par
+  \vfill
+  \begin{abstract}
+    \noindent
+    This report documents the full pipeline of the Array on the Lunar Outpost
+    (ALO) array-configuration trade-off study.
+    ALO is a proposed low-frequency radio array (1--40\,MHz) to be deployed on
+    the lunar far side at the Tsiolkovsky crater, exploiting the natural
+    radio-frequency interference (RFI) shield of the Moon.
+    Its primary science goal is the detection of magnetospheric radio emission
+    from hot Jupiter exoplanets via the electron-cyclotron maser (ECM)
+    instability.
+    We evaluate four outrigger geometries (ring, Y-shape, random, and line),
+    two core sizes (32\,$\times$\,32 and 128\,$\times$\,128 dipoles), two
+    outrigger separations (1.0 and 5.0\,km), and two novel cross-shaped
+    asymmetric configurations (E-W and N-S dominant arms) against a catalogue
+    of 373 known hot Jupiters.
+    Key metrics computed include the array factor (AF) and beam solid angle,
+    half-power beam width (HPBW), maximum sidelobe level (MSL), UV coverage,
+    thermal sensitivity, confusion limit, and required integration time.
+    The 128\,$\times$\,128 ring and line arrays at 5.0\,km outrigger separation
+    achieve the highest detection yield (34 feasible targets in under 100\,h),
+    while the cross configurations provide the best sidelobe suppression
+    (MSL\,$= -4.3$\,dB).
+  \end{abstract}
+\end{titlepage}
+
+\tableofcontents
+\clearpage
+
+% ══════════════════════════════════════════════════════════════════
+\section{Project Overview}
+\label{sec:overview}
+
+The Array on the Lunar Outpost (ALO) is a proposed phased-array radio telescope
+designed to operate in the frequency range 1--40\,MHz.
+This band is completely inaccessible from Earth due to ionospheric reflection
+below $\sim$10\,MHz and RFI saturation at higher frequencies, making the lunar
+far side the only viable platform for systematic exploration of the decametric
+radio sky.
+
+ALO will be located at the Tsiolkovsky impact crater on the lunar far side
+(latitude $\varphi = -20.38^\circ$, longitude $\lambda = 128.97^\circ$).
+The crater rim acts as a natural shield against terrestrial RFI and acts as a
+mechanically stable flat floor for antenna deployment.
+
+The array consists of individual dipole antenna elements with physical spacing
+$d = 5.15$\,m and an aperture efficiency $\eta = 0.70$.
+A central ``core'' of $N_c \times N_c$ elements forms a contiguous dense
+aperture, while four outrigger sub-arrays of $N_o \times N_o$ elements are
+placed at variable distances from the core to extend the interferometric
+baseline.
+
+The present study systematically explores the trade-space of array geometry,
+core size, and outrigger separation in order to identify the configuration most
+suited to detecting radio emission from hot Jupiter exoplanets.
+All modeling and simulation code is contained in two Python files:
+\texttt{alo\_array\_modeling.py} (physical constants, beam/sensitivity
+calculators) and \texttt{alo\_geometry\_tradeoff.py} (geometry generator,
+configuration evaluator, and figure factory).
+
+% ══════════════════════════════════════════════════════════════════
+\section{Scientific Motivation}
+\label{sec:motivation}
+
+\subsection{Magnetospheric Radio Emission from Exoplanets}
+
+Jupiter emits strong bursts of circularly polarised radio emission up to
+$\sim$40\,MHz via the electron-cyclotron maser (ECM) instability driven by its
+interaction with the Galilean moon Io and the solar wind.
+Hot Jupiters---gas giants in orbits $\lesssim 0.1$\,AU---are expected to
+produce analogous ECM emission, potentially orders of magnitude stronger than
+Jupiter's, because:
+\begin{itemize}
+  \item Their proximity to the host star drives intense stellar-wind ram
+    pressure.
+  \item Strong magnetic fields (several gauss) are inferred from planetary
+    interior models, setting the cyclotron cutoff above 40\,MHz.
+  \item Star-planet magnetic interaction (analogous to Io--Jupiter) adds an
+    additional energy source.
+\end{itemize}
+
+The predicted flux density for bright targets (e.g.\ $\tau$\,Boo\,b,
+51\,Peg\,b, $\upsilon$\,And\,b) is 1--100\,mJy at 10--40\,MHz, depending on
+the assumed field strength and beam fraction.
+
+\subsection{Why the Lunar Far Side?}
+
+Below 10\,MHz the terrestrial ionosphere is opaque.
+Between 10 and 30\,MHz, broadband RFI from human technology overwhelms
+astrophysical signals even at the most remote Earth-based sites.
+The lunar far side is permanently shielded from Earth by $\sim$3000\,km of
+solid rock.
+The Moon has no ionosphere above 1\,MHz at night, and the lunar far side
+is also shielded from solar radio bursts during lunar night.
+
+\subsection{Target Catalogue}
+
+The target catalogue used in this study contains 373 hot Jupiter systems with
+predicted ECM emission frequencies in the 1--40\,MHz band, compiled from the
+NASA Exoplanet Archive.
+Flux predictions follow a scaling law based on the stellar wind ram pressure
+and the planet's estimated magnetic moment.
+The catalogue is divided into four frequency sub-bands:
+1--5\,MHz, 5--10\,MHz, 10--20\,MHz, and 20--40\,MHz.
+
+% ══════════════════════════════════════════════════════════════════
+\section{Array Geometry Setup}
+\label{sec:geometry}
+
+\subsection{Dipole Spacing and Core Layout}
+
+Each element is a short dipole with physical size $d = 5.15$\,m and aperture
+efficiency $\eta = 0.70$.
+The effective area of a single element at frequency $\nu$ is:
+\begin{equation}
+  A_\mathrm{eff,elem}(\nu) = \eta\,\frac{\lambda^2}{4\pi}
+  = \eta\,\frac{c^2}{4\pi\nu^2},
+  \label{eq:aeff_elem}
+\end{equation}
+where $c = 3 \times 10^8$\,m\,s$^{-1}$.
+
+A square core of $N_c \times N_c$ elements arranged on a regular grid with
+spacing $d$ occupies a footprint of $(N_c - 1) \times d$ on each side.
+Configurations tested: $N_c = 32$ (1088\,elements\footnote{Including four
+$N_o \times N_o = 4\times4$ outrigger sub-arrays of 16 elements each.
+$N_\mathrm{tot} = 32^2 + 4\times4^2 = 1024 + 64 = 1088$.}) and
+$N_c = 128$ (17\,408 elements in total with 16-element outriggers).
+
+\subsection{Outrigger Placement}
+
+Four outrigger sub-arrays, each of size $N_o \times N_o$, are placed
+symmetrically at distance $r$ from the core centre along the four cardinal
+directions (North, South, East, West) for symmetric geometries.
+For asymmetric (cross) geometries, different arm lengths are used (see
+Section~\ref{sec:configs}).
+
+The outrigger separation values tested are $r = 1.0$\,km and $r = 5.0$\,km.
+
+Figure~\ref{fig:layout_overview} shows the array layouts for all 16
+standard configurations.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\textwidth]{layout_overview.png}
+  \caption{Overview of all 16 standard array layouts.
+    Rows correspond to outrigger geometry (ring, Y-shape, random, line);
+    columns to core size and outrigger separation.
+    Blue dots are core elements; orange squares mark outrigger sub-array
+    centres.}
+  \label{fig:layout_overview}
+\end{figure}
+
+% ══════════════════════════════════════════════════════════════════
+\section{Coordinate Transformation}
+\label{sec:coords}
+
+All antenna positions are expressed in a local East-North-Up (ENU) frame
+centred on the Tsiolkovsky crater.
+
+\subsection{ENU Basis Vectors}
+
+Given geodetic latitude $\varphi$ and longitude $\lambda$ of the array
+centre, the ENU basis unit vectors in the selenocentric Cartesian frame are:
+\begin{align}
+  \hat{e}_E &= (-\sin\lambda,\; \cos\lambda,\; 0), \\
+  \hat{e}_N &= (-\sin\varphi\cos\lambda,\; -\sin\varphi\sin\lambda,\; \cos\varphi), \\
+  \hat{e}_U &= (\cos\varphi\cos\lambda,\; \cos\varphi\sin\lambda,\; \sin\varphi).
+\end{align}
+
+An element at ENU offset $(x, y, 0)$ relative to the array centre has
+selenocentric position:
+\begin{equation}
+  \mathbf{r} = x\,\hat{e}_E + y\,\hat{e}_N.
+\end{equation}
+
+\subsection{Direction Cosines}
+
+For far-field imaging in the small-angle regime the sky position of a source is
+parameterised by direction cosines $(l, m, n)$ where
+$l^2 + m^2 + n^2 = 1$ and the phase centre is at $(l,m) = (0,0)$, $n = 1$.
+The array factor is computed on a grid of $(l, m)$ values spanning
+$[-1, 1]^2$, enforcing $l^2 + m^2 \le 1$.
+
+% ══════════════════════════════════════════════════════════════════
+\section{Array Configurations}
+\label{sec:configs}
+
+\subsection{Standard Outrigger Geometries}
+
+Four outrigger placement patterns are evaluated:
+
+\begin{description}
+  \item[Ring] Four outriggers on the cardinal axes at equal distance $r$.
+    The UV coverage forms a cross plus core blob.
+  \item[Y-shape] Outriggers placed at $0^\circ$ (N), $120^\circ$, and
+    $240^\circ$ plus one at $90^\circ$ (E), giving a slightly asymmetric
+    Y-pattern.
+  \item[Random] Outrigger centres drawn from a uniform 2-D distribution
+    within a circle of radius $r$, providing a more isotropic UV coverage.
+  \item[Line] All four outriggers placed along the East--West axis at
+    offsets $-r$, $-r/2$, $r/2$, $r$ providing maximum E-W resolution.
+\end{description}
+
+\subsection{Cross-Shaped Asymmetric Configurations}
+\label{sec:cross}
+
+Two additional configurations with a cross-shaped outrigger arrangement but
+\emph{unequal} arm lengths are introduced to break the periodicity that causes
+aliasing rings in equal-arm configurations:
+
+\begin{center}
+\begin{tabular}{lcccc}
+  \toprule
+  Configuration & N arm & S arm & E arm & W arm \\
+  \midrule
+  Cross E-W & 1.0\,km & 1.0\,km & 5.0\,km & 3.0\,km \\
+  Cross N-S & 5.0\,km & 3.0\,km & 1.0\,km & 1.0\,km \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+Both cross configurations use a 128$\times$128 core ($N_c = 128$) with
+16-element outrigger sub-arrays ($N_o = 4 \times 4$), giving 17\,408 elements
+in total and $B_\mathrm{max} = 8.33$\,km.
+Figure~\ref{fig:layout_cross} shows the layouts of both cross configurations
+alongside the four standard 128$\times$128 + 5\,km reference arrays.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\textwidth]{layout_cross_overview.png}
+  \caption{Layouts of the six configurations used in the cross comparison study.
+    Top row: four standard 128\,$\times$\,128 + 5\,km outrigger configurations.
+    Bottom row: cross E-W and cross N-S.}
+  \label{fig:layout_cross}
+\end{figure}
+
+% ══════════════════════════════════════════════════════════════════
+\section{Array Factor and Beam-Pattern Calculation}
+\label{sec:af}
+
+\subsection{Array Factor Definition}
+
+The array factor (AF) is the spatial Fourier transform of the aperture
+illumination.
+For $N$ elements at positions $\mathbf{r}_k = (x_k, y_k)$ with complex weights
+$w_k$ (set to unity for an unweighted array), the AF at sky direction $(l, m)$
+and wavelength $\lambda = c/\nu$ is:
+\begin{equation}
+  \mathrm{AF}(l,m;\nu) = \sum_{k=1}^{N} w_k\,
+    \exp\!\left[\frac{2\pi i}{\lambda}\bigl(x_k\,l + y_k\,m\bigr)\right].
+  \label{eq:af}
+\end{equation}
+
+The normalised power beam is:
+\begin{equation}
+  B(l,m;\nu) = \frac{|\mathrm{AF}(l,m;\nu)|^2}
+               {|\mathrm{AF}(0,0;\nu)|^2}.
+\end{equation}
+
+\subsection{Physical Origin of Beam Symmetry}
+
+A key result of this study is that $B(l,m)$ is \emph{always}
+180$^\circ$-rotationally symmetric, regardless of array geometry.
+This follows from Hermitian symmetry: for real weights $w_k$,
+\begin{equation}
+  \mathrm{AF}(-l,-m) = \mathrm{AF}^*(l,m)
+  \quad\Longrightarrow\quad
+  B(-l,-m) = B(l,m).
+\end{equation}
+This is not a code artefact or a modelling approximation---it is a fundamental
+property of the Fourier transform of any real-valued aperture.
+Geometry information is encoded in the \emph{phase} of AF, which is discarded
+when the power beam $|AF|^2$ is formed.
+Consequently, point-source sensitivity is identical for all array geometries
+with the same total element count $N$, and beam-shape differences between
+geometries are limited to their sidelobe structure.
+
+\subsection{Frequency Dependence}
+
+The beam solid angle scales as $\Omega_B \propto \lambda^2 \propto \nu^{-2}$,
+so the HPBW shrinks rapidly with frequency.
+Beam patterns are computed at representative frequencies within each sub-band:
+3.0, 7.5, 15.0, and 30.0\,MHz for the 1--5, 5--10, 10--20, and 20--40\,MHz
+bands respectively.
+All AF evaluations use an $n_\mathrm{grid} = 512$ $(l,m)$ grid.
+
+Figure~\ref{fig:af_overview} shows the normalised beam patterns at 30\,MHz
+for the eight standard configurations.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\textwidth]{AF_overview_30MHz.png}
+  \caption{Normalised power-beam patterns at 30\,MHz for all eight
+    standard configurations (32\,$\times$\,32 and 128\,$\times$\,128 cores,
+    1.0 and 5.0\,km outrigger separation).
+    The colour scale is in dB, clipped at $-30$\,dB to reveal sidelobe
+    structure.
+    All beams show 180$^\circ$ rotational symmetry as required by
+    Hermitian symmetry of the Fourier transform.}
+  \label{fig:af_overview}
+\end{figure}
+
+\subsection{Beam Contour Plots}
+
+Beam patterns are visualised with three contour levels at 10\%, 30\%, and 50\%
+of the peak power (i.e.\ $-10$, $-5.2$, and $-3$\,dB).
+These levels mark the outer sidelobe envelope, the mid-sidelobe region, and the
+main-lobe half-power boundary respectively.
+Figure~\ref{fig:beam_contours} shows beam contours for the six cross-comparison
+configurations at 30\,MHz.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\textwidth]{beam_contours_cross.png}
+  \caption{Beam contour plots at 30\,MHz for the six configurations in the
+    cross comparison study.
+    Contour levels at 10\% (cyan), 30\% (green), and 50\% (white) of peak.
+    The cross configurations (bottom row) show a more compact sidelobe
+    envelope than the symmetric ring and line arrays (top row).}
+  \label{fig:beam_contours}
+\end{figure}
+
+% ══════════════════════════════════════════════════════════════════
+\section{Beam Metrics}
+\label{sec:beam_metrics}
+
+\subsection{Beam Solid Angle}
+
+The beam solid angle is the solid-angle integral of the normalised power beam:
+\begin{equation}
+  \Omega_B(\nu) = \iint B(l,m;\nu)\,\frac{\mathrm{d}l\,\mathrm{d}m}
+                   {\sqrt{1 - l^2 - m^2}}.
+  \label{eq:omega_b}
+\end{equation}
+In practice, the integral is replaced by a discrete sum over the $(l,m)$ grid
+multiplied by the pixel area $(\Delta l)^2$.
+
+\subsection{Half-Power Beam Width}
+
+The HPBW is derived from the beam solid angle assuming a circular Gaussian
+main lobe:
+\begin{equation}
+  \theta_\mathrm{HPBW} = 2\sqrt{\frac{\Omega_B}{\pi}}
+  \quad[\mathrm{rad}].
+\end{equation}
+
+\subsection{Directivity and Gain}
+
+Peak directivity and gain are:
+\begin{equation}
+  D = \frac{4\pi}{\Omega_B}, \qquad G = \eta\,D,
+\end{equation}
+and the total effective area is:
+\begin{equation}
+  A_\mathrm{eff}(\nu) = \frac{\lambda^2\,G}{4\pi}.
+\end{equation}
+
+\subsection{Maximum Sidelobe Level}
+
+The MSL is defined as the peak normalised beam value outside the main lobe
+(i.e.\ outside the $B \ge 0.5$ region), expressed in dB:
+\begin{equation}
+  \mathrm{MSL} = 10\log_{10}\!\Bigl(\max_{B < 0.5} B(l,m)\Bigr).
+\end{equation}
+
+\subsection{Summary of Beam Metrics}
+
+Table~\ref{tab:beam_metrics} summarises the HPBW and MSL at 30\,MHz for all
+configurations in the cross comparison study.
+
+\begin{table}[H]
+  \centering
+  \caption{Beam metrics at 30\,MHz for the six cross-comparison configurations.
+    All use a 128\,$\times$\,128 core (17\,408 total elements).}
+  \label{tab:beam_metrics}
+  \begin{tabular}{lccrr}
+    \toprule
+    Configuration & $B_\mathrm{max}$ (km) & HPBW (arcmin) & MSL (dB) \\
+    \midrule
+    Ring             & 10.33 & 63.8 & $-3.8$ \\
+    Y-shape          &  8.99 & 64.9 & $-3.3$ \\
+    Random           &  7.65 & 64.0 & $-3.8$ \\
+    Line             & 10.33 & 65.0 & $-3.4$ \\
+    Cross E-W        &  8.33 & 64.4 & $-4.3$ \\
+    Cross N-S        &  8.33 & 64.4 & $-4.3$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The cross configurations achieve the best (most negative) MSL of $-4.3$\,dB,
+0.5\,dB better than the best symmetric configuration.
+This improvement arises because the irregular arm lengths (1/1/5/3\,km)
+prevent baseline lengths from repeating at regular intervals, suppressing
+coherent addition of aliasing rings.
+
+% ══════════════════════════════════════════════════════════════════
+\section{UV Coverage Analysis}
+\label{sec:uv}
+
+\subsection{Definition}
+
+UV coverage is the set of spatial frequencies sampled by an interferometric
+array.
+For a pair of stations at positions $(x_i, y_i)$ and $(x_j, y_j)$, the
+baseline vector projected onto the sky plane at frequency $\nu$ is:
+\begin{equation}
+  (u, v) = \frac{(x_j - x_i,\; y_j - y_i)}{\lambda}.
+\end{equation}
+Both the baseline and its conjugate $(-u, -v)$ are included (Hermitian
+conjugate pair), so $N_s$ stations produce $N_s(N_s-1)$ UV points per
+frequency channel.
+
+\subsection{Station-Level UV Coverage}
+
+For multi-sub-array configurations, UV coverage is computed at the
+\emph{station} level, treating each sub-array as a single coherent station.
+The five stations (one core + four outriggers) produce $5 \times 4 = 20$ UV
+points per channel (including conjugates).
+
+\subsection{Multi-Frequency Synthesis}
+
+Multi-frequency synthesis (MFS) is simulated by computing UV coverage at every
+1-MHz channel within each sub-band.
+At frequency $\nu$ the baseline $(u,v)$ scales as $1/\lambda \propto \nu$, so
+each baseline traces a radial streak in the UV plane as frequency increases.
+The four sub-bands and their colours used in Figure~\ref{fig:uv_coverage} are:
+\begin{itemize}
+  \item 1--5\,MHz (red): low-frequency, large $\lambda$, short UV coverage
+  \item 5--10\,MHz (orange): intermediate
+  \item 10--20\,MHz (blue): higher resolution
+  \item 20--40\,MHz (purple): highest resolution, longest UV tracks
+\end{itemize}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\textwidth]{uv_coverage.png}
+  \caption{UV coverage for all standard configurations and the two cross
+    configurations, computed via multi-frequency synthesis using 1-MHz channels
+    within each sub-band.
+    Each sub-band is plotted in a distinct colour.
+    The cross configurations (bottom right) show elongated UV coverage in one
+    axis, reflecting the dominant long arm.}
+  \label{fig:uv_coverage}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\textwidth]{uv_coverage_cross.png}
+  \caption{UV coverage for the six cross-comparison configurations only,
+    with all four sub-bands superimposed.
+    The ring and line arrays provide more rotationally symmetric UV coverage;
+    the cross arrays concentrate UV tracks along two axes.}
+  \label{fig:uv_cross}
+\end{figure}
+
+% ══════════════════════════════════════════════════════════════════
+\section{Sensitivity Model}
+\label{sec:sensitivity}
+
+\subsection{Sky Temperature}
+
+The sky brightness temperature in the 1--40\,MHz band is dominated by
+Galactic synchrotron emission and follows a power law:
+\begin{equation}
+  T_\mathrm{sky}(\nu) = 180\,\mathrm{K} \times
+    \left(\frac{\nu}{180\,\mathrm{MHz}}\right)^{-2.6}.
+  \label{eq:tsky}
+\end{equation}
+At 10\,MHz, $T_\mathrm{sky} \approx 1.2 \times 10^5$\,K.
+This is the dominant noise source; receiver and ground contributions are
+negligible by comparison.
+
+\subsection{System Equivalent Flux Density}
+
+The system equivalent flux density (SEFD) per element is:
+\begin{equation}
+  \mathrm{SEFD}_\mathrm{elem}(\nu) = \frac{2\,k_B\,T_\mathrm{sky}(\nu)}
+                                         {A_\mathrm{eff,elem}(\nu)},
+  \label{eq:sefd}
+\end{equation}
+where $k_B = 1.381 \times 10^{-23}$\,J\,K$^{-1}$.
+For the phased array of $N$ elements operating as a coherent aperture, the
+array SEFD is $\mathrm{SEFD}_\mathrm{elem}/N$.
+
+\subsection{Thermal Sensitivity}
+
+For dual-polarisation correlation ($N_\mathrm{pol} = 2$) over bandwidth
+$\Delta\nu$ and integration time $t$, the thermal noise is:
+\begin{equation}
+  \sigma_\mathrm{th}(\nu, t) = \frac{\mathrm{SEFD}_\mathrm{elem}}
+    {\sqrt{N_\mathrm{pol}\,N(N-1)\,\Delta\nu\,t}},
+  \label{eq:sigma_th}
+\end{equation}
+where $N(N-1)$ counts all unique baselines (including cross-correlations
+between core elements and outrigger elements).
+
+\subsection{Confusion Limit}
+
+Below a certain flux level, sources blend together in the beam and set an
+irreducible confusion noise floor:
+\begin{equation}
+  \sigma_c(\nu, B_\mathrm{max}) = 0.2\,\mathrm{mJy} \times
+    \left(\frac{\nu}{74\,\mathrm{MHz}}\right)^{0.8} \times
+    \left(\frac{\theta_\mathrm{HPBW}}{4\,\mathrm{arcmin}}\right),
+  \label{eq:confusion}
+\end{equation}
+where $\theta_\mathrm{HPBW}$ is determined by the maximum baseline
+$B_\mathrm{max}$.
+At 30\,MHz with $B_\mathrm{max} = 10$\,km, $\sigma_c \approx 0.006$\,mJy,
+far below the ECM flux predictions.
+
+% ══════════════════════════════════════════════════════════════════
+\section{Integration-Time Calculation}
+\label{sec:tint}
+
+\subsection{Required Integration Time}
+
+To detect a target of flux density $S$ at $N_\sigma = 5\sigma$ significance,
+the required integration time is obtained by solving:
+\begin{equation}
+  N_\sigma \sqrt{\sigma_\mathrm{th}^2(t) + \sigma_c^2} = S.
+  \label{eq:detection_condition}
+\end{equation}
+Substituting equation~\eqref{eq:sigma_th}:
+\begin{equation}
+  t_\mathrm{req} = \left(\frac{\mathrm{SEFD}_\mathrm{elem}}
+    {\sqrt{N_\mathrm{pol}\,N(N-1)\,\Delta\nu}}\right)^2
+    \frac{1}{(S/N_\sigma)^2 - \sigma_c^2}.
+  \label{eq:t_req}
+\end{equation}
+If $(S/N_\sigma)^2 \le \sigma_c^2$ (confusion-dominated), the target is
+irresolvable regardless of integration time and $t_\mathrm{req} = \infty$ is
+returned.
+
+\subsection{Feasibility Classification}
+
+Targets are classified into three categories:
+\begin{description}
+  \item[Feasible] $t_\mathrm{req} < 100$\,h — achievable in a single observing
+    campaign.
+  \item[Aspirational] $100 \le t_\mathrm{req} < 1000$\,h — borderline; might
+    be feasible with improved calibration or stacking.
+  \item[Impossible] $t_\mathrm{req} \ge 1000$\,h — not detectable by ALO in
+    any realistic scenario.
+\end{description}
+
+% ══════════════════════════════════════════════════════════════════
+\section{Plot Interpretation}
+\label{sec:plot_interp}
+
+\subsection{Beam Pattern Plots}
+
+Beam patterns are shown as 2D images of $B(l,m)$ on a dB scale.
+The colour map spans $-30$ to $0$\,dB, chosen to make sidelobe structure
+visible while not washing out the main lobe.
+The 180$^\circ$ symmetry visible in all plots is physical (Hermitian symmetry),
+not a plotting artefact.
+Differences between geometries appear as changes in sidelobe shape and
+sidelobe level, not in the main lobe width (which is set by the total core
+diameter).
+
+\subsection{UV Coverage Plots}
+
+Each coloured point in the UV plane represents one baseline at one frequency
+channel.
+Dense radial streaks indicate multi-frequency synthesis tracks.
+Gaps in the UV plane correspond to spatial frequencies not sampled, which
+manifest as image artefacts (grating lobes) if uncleaned.
+The cross configurations show elongated UV tracks along the dominant arm
+direction.
+
+\subsection{Sensitivity Comparison Plots}
+
+Figure~\ref{fig:metrics_cross} compares beam metrics and
+Figure~\ref{fig:sensitivity_cross} compares the number of feasible detections
+across all six configurations in the cross comparison study.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.92\textwidth]{metrics_cross_vs_originals.png}
+  \caption{Beam quality metrics (HPBW and MSL) at all four frequency sub-bands
+    for the six cross-comparison configurations.
+    The cross configurations consistently achieve lower (better) MSL than the
+    symmetric arrays.}
+  \label{fig:metrics_cross}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.92\textwidth]{sensitivity_cross_vs_originals.png}
+  \caption{Number of feasible (${<}100$\,h) detections per configuration
+    per sub-band in the cross comparison study.
+    The 20--40\,MHz band dominates owing to stronger predicted ECM fluxes and
+    lower sky temperature.}
+  \label{fig:sensitivity_cross}
+\end{figure}
+
+\subsection{Detection Matrix}
+
+The detection matrix (Figure~\ref{fig:detection_matrix}) shows the required
+integration time for each target--configuration pair, coded by feasibility
+category.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\textwidth]{detection_matrix_heatmap.png}
+  \caption{Detection feasibility matrix for the full array-configuration
+    trade-off study.
+    Green: feasible ($<100$\,h); yellow: aspirational (100--1000\,h);
+    red: impossible.
+    Rows are configurations; columns are targets ordered by decreasing
+    flux density.}
+  \label{fig:detection_matrix}
+\end{figure}
+
+% ══════════════════════════════════════════════════════════════════
+\section{Results and Comparison}
+\label{sec:results}
+
+\subsection{Standard Configuration Comparison}
+
+Table~\ref{tab:main_results} summarises the detection yield for all 16
+standard configurations across the full 373-target catalogue.
+
+\begin{table}[H]
+  \centering
+  \caption{Array configuration summary.
+    $N_\mathrm{det}(<100\,\mathrm{h})$ counts targets detectable in $<100$\,h
+    in any frequency band.}
+  \label{tab:main_results}
+  \begin{tabular}{lcccc}
+    \toprule
+    Configuration & $N_\mathrm{elem}$ & $B_\mathrm{max}$ (km)
+      & HPBW at 30 MHz (arcmin) & $N_\mathrm{det}(<100\,\mathrm{h})$ \\
+    \midrule
+    ring\_core32x32\_1.0km   &  1088 &  2.08 & 579 & -- \\
+    ring\_core32x32\_5.0km   &  1088 & 10.08 &  63 & -- \\
+    ring\_core128x128\_1.0km & 17408 &  2.33 & 579 & -- \\
+    ring\_core128x128\_5.0km & 17408 & 10.33 & 63.8 & \textbf{34} \\
+    y\_shape\_core32x32\_1.0km   &  1088 & 1.81 & 578 & -- \\
+    y\_shape\_core32x32\_5.0km   &  1088 & 8.74 & 63 & -- \\
+    y\_shape\_core128x128\_1.0km & 17408 & 2.06 & 578 & -- \\
+    y\_shape\_core128x128\_5.0km & 17408 & 8.99 & 64.9 & \textbf{33} \\
+    random\_core32x32\_1.0km   &  1088 & 1.55 & 576 & -- \\
+    random\_core32x32\_5.0km   &  1088 & 7.41 & 63 & -- \\
+    random\_core128x128\_1.0km & 17408 & 1.79 & 576 & -- \\
+    random\_core128x128\_5.0km & 17408 & 7.65 & 64.0 & \textbf{31} \\
+    line\_core32x32\_1.0km   &  1088 & 2.08 & 576 & -- \\
+    line\_core32x32\_5.0km   &  1088 & 10.08 & 63 & -- \\
+    line\_core128x128\_1.0km & 17408 & 2.33 & 576 & -- \\
+    line\_core128x128\_5.0km & 17408 & 10.33 & 65.0 & \textbf{34} \\
+    \bottomrule
+    \multicolumn{5}{l}{\small $N_\mathrm{det}$ for 32\,$\times$\,32 and 1\,km
+      configurations is $<5$ across all bands and omitted.} \\
+  \end{tabular}
+\end{table}
+
+\textbf{Key findings:}
+\begin{itemize}
+  \item The 128\,$\times$\,128 core is essential: the 32\,$\times$\,32 arrays
+    have insufficient collecting area to detect any target in $<100$\,h.
+  \item A 5\,km outrigger separation is essential for angular resolution: at
+    1\,km the HPBW at 30\,MHz is $\sim$580\,arcmin, too large to discriminate
+    targets from background.
+  \item The ring and line arrays share the largest $B_\mathrm{max}$ (10.33\,km)
+    and thus the sharpest beam and lowest confusion limit, yielding the most
+    detections (34 each).
+  \item Geometry differences among the four outrigger patterns are small:
+    $\Delta N_\mathrm{det} \le 3$ across ring/Y-shape/random/line.
+\end{itemize}
+
+\subsection{Cross Configuration Comparison}
+
+Table~\ref{tab:cross_results} compares the two cross configurations against the
+four 128\,$\times$\,128 + 5\,km reference arrays.
+
+\begin{table}[H]
+  \centering
+  \caption{Cross configuration comparison results.}
+  \label{tab:cross_results}
+  \begin{tabular}{lrrrr}
+    \toprule
+    Configuration & $N_\mathrm{elem}$ & $B_\mathrm{max}$ (km)
+      & $N_\mathrm{det}(<100\,\mathrm{h})$ & MSL (dB) \\
+    \midrule
+    Ring             & 17408 & 10.33 & 34 & $-3.8$ \\
+    Y-shape          & 17408 &  8.99 & 33 & $-3.3$ \\
+    Random           & 17408 &  7.65 & 31 & $-3.8$ \\
+    Line             & 17408 & 10.33 & 34 & $-3.4$ \\
+    Cross E-W        & 17408 &  8.33 & 33 & $\mathbf{-4.3}$ \\
+    Cross N-S        & 17408 &  8.33 & 33 & $\mathbf{-4.3}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The cross configurations achieve:
+\begin{itemize}
+  \item Best MSL ($-4.3$\,dB vs.\ $-3.3$ to $-3.8$\,dB for symmetric arrays).
+  \item Competitive detection yield (33 targets) despite a shorter maximum
+    baseline (8.33 vs.\ 10.33\,km for ring and line).
+  \item Elongated UV coverage providing anisotropic resolution, which may be
+    preferred for specific science cases (e.g.\ mapping extended plasma
+    structures).
+\end{itemize}
+
+\subsection{Beam Symmetry Analysis}
+
+A dedicated asymmetric beam study was conducted to investigate whether array
+geometry asymmetry is detectable in the power beam.
+Arrays with deliberately broken symmetry (line: all outriggers along E-W axis)
+were compared to rotationally symmetric arrays (ring) at multiple pointing
+directions.
+
+\textbf{Conclusion:} The power beam $B(l,m) = |\mathrm{AF}|^2$ is always
+180$^\circ$-rotationally symmetric due to the Hermitian symmetry of the
+Fourier transform.
+Asymmetry information is contained only in the \emph{phase} of the complex AF,
+not in the magnitude.
+No error in the code was found; the symmetry is physically correct.
+
+\subsection{Extended Source Response}
+
+An extended source analysis was performed using a 32\,$\times$\,32 + 5\,km
+array (chosen for sufficient beam resolution in the numerical grid) to test
+whether geometry differences become visible for spatially resolved sources.
+
+The beam-weighted flux-recovery fraction:
+\begin{equation}
+  \eta_\mathrm{BW} = \frac{\sum_{l,m} I_\mathrm{true}(l,m)\,B(l,m)}
+                           {\sum_{l,m} I_\mathrm{true}(l,m)}
+\end{equation}
+was computed as a function of source angular size and position angle (PA).
+
+\textbf{Results:}
+\begin{itemize}
+  \item For point sources, $\eta_\mathrm{BW} = 1$ identically for all
+    geometries (as expected).
+  \item For extended sources, $\eta_\mathrm{BW}$ varies with source size and PA,
+    and the variation is geometry-dependent.
+  \item The line array shows the largest PA-orientation bias
+    ($\Delta\eta = 0.0111$, the flux-recovery range over all tested PAs).
+  \item The ring array shows the smallest PA-orientation bias
+    ($\Delta\eta = 0.0002$), consistent with its near-isotropic UV coverage.
+\end{itemize}
+
+Since ALO's primary targets are point-like exoplanets (angular size
+$\ll$ HPBW $\approx 64$\,arcmin at 30\,MHz), extended-source response
+is not a discriminating metric for the primary science case.
+
+% ══════════════════════════════════════════════════════════════════
+\section{Final Conclusions}
+\label{sec:conclusions}
+
+\begin{enumerate}
+  \item \textbf{Core size is the dominant driver of sensitivity.}
+    The 128\,$\times$\,128 core (17\,408 elements, $A_\mathrm{eff}
+    \approx 13{,}000$\,m$^2$ at 30\,MHz) is necessary for feasible detections;
+    the 32\,$\times$\,32 core is insufficient.
+
+  \item \textbf{Outrigger separation drives angular resolution.}
+    At 5\,km the HPBW at 30\,MHz is $\sim$64\,arcmin; at 1\,km it is
+    $\sim$578\,arcmin.
+    The long baseline suppresses the confusion limit by a factor of 9, enabling
+    detection of targets that would otherwise be confusion-dominated.
+
+  \item \textbf{Outrigger geometry has a second-order effect on detection yield.}
+    Differences in feasible detection count among ring, Y-shape, random, and
+    line are only 1--3 targets out of 34.
+    The choice of geometry should be driven by other considerations (e.g.\
+    UV-coverage isotropy, sidelobe characteristics, construction constraints).
+
+  \item \textbf{Cross configurations offer the best sidelobe suppression.}
+    Irregular arm lengths (1/1/5/3\,km) break the periodicity that causes
+    coherent aliasing rings, reducing MSL by 0.5\,dB relative to the best
+    symmetric array.
+    This comes at the cost of a slightly shorter maximum baseline (8.33 vs.\
+    10.33\,km) and hence one fewer feasible detection.
+
+  \item \textbf{The 20--40\,MHz sub-band is the most productive.}
+    Most feasible detections occur in this band due to a combination of lower
+    sky temperature, higher predicted ECM flux, and sufficient angular resolution
+    at $B_\mathrm{max} = 8$--10\,km.
+
+  \item \textbf{Point-source sensitivity is geometry-independent.}
+    The power beam $|AF|^2$ is Hermitian-symmetric for any real-weight array.
+    Geometry information in $|AF|^2$ is limited to sidelobe structure; main-lobe
+    solid angle depends only on the total core aperture, not on outrigger pattern.
+    This is a fundamental physical result, not a modelling limitation.
+\end{enumerate}
+
+% ══════════════════════════════════════════════════════════════════
+\section{Recommendations for Next Steps}
+\label{sec:recommendations}
+
+\begin{enumerate}
+  \item \textbf{Beam forming with weights.}
+    Replace unit weights with an apodisation taper (e.g.\ Hanning window) to
+    reduce sidelobes further.
+    A Taylor taper with $n = 5$ sidelines could reduce MSL to $\sim -20$\,dB
+    at the cost of $\sim$20\% wider main lobe.
+
+  \item \textbf{Realistic beam model including element pattern.}
+    Include the element (dipole) radiation pattern $E(\theta, \phi)$ as a
+    multiplicative factor in the AF.
+    This will create an element-pattern null towards the horizon and modify the
+    effective collecting area at large zenith angles.
+
+  \item \textbf{Lunar rotation and source tracking.}
+    Compute the UV-coverage track for a full $\sim$14-day lunar day, including
+    diurnal rotation of the far-side frame.
+    Earth-facing sources appear above the lunar horizon for $\sim$11\,h
+    per sidereal day and their UV tracks will fill a much larger region of the
+    UV plane.
+
+  \item \textbf{Optimal sub-array size for cross configuration.}
+    Optimise the outrigger sub-array size $N_o$ for the cross geometry.
+    Larger outriggers increase baseline sensitivity but increase mass and
+    deployment cost.
+
+  \item \textbf{Calibration architecture.}
+    Design a calibration strategy for the far-side environment.
+    Bright background sources (e.g.\ Cas\,A, Cyg\,A, Vir\,A) will be visible
+    above the lunar horizon; assess their usability as calibrators for both
+    gain and phase solutions.
+
+  \item \textbf{Ionosphere-free mode.}
+    Below $\sim$1\,MHz the Moon's plasma environment (exosphere) may introduce
+    dispersive delays.
+    Extend the sensitivity model to account for this chromatic phase noise.
+
+  \item \textbf{Comparison with FARSIDE/DAPPER concepts.}
+    Benchmark ALO performance against existing lunar-farside array proposals
+    (FARSIDE, DAPPER, DSL) in terms of collecting area, angular resolution,
+    and detection yield for the same target catalogue.
+
+  \item \textbf{Deployment feasibility.}
+    Feed the optimal configuration parameters (core size 128\,$\times$\,128,
+    outrigger distance 5\,km, cross or ring geometry) into an engineering
+    trade study covering deployment mass, power budget (solar/RTG), and
+    thermal management on the lunar surface.
+\end{enumerate}
+
+% ══════════════════════════════════════════════════════════════════
+\appendix
+\section*{Appendix: Physical Constants and Parameters}
+
+\begin{center}
+\begin{tabular}{lll}
+  \toprule
+  Symbol & Value & Description \\
+  \midrule
+  $d$        & 5.15\,m                 & Dipole element spacing \\
+  $\eta$     & 0.70                    & Aperture efficiency \\
+  $N_\sigma$ & 5                       & Detection significance threshold \\
+  $N_\mathrm{pol}$ & 2               & Number of polarisations \\
+  $c$        & $3\times10^8$\,m\,s$^{-1}$ & Speed of light \\
+  $k_B$      & $1.381\times10^{-23}$\,J\,K$^{-1}$ & Boltzmann constant \\
+  $\varphi$  & $-20.38^\circ$          & Tsiolkovsky crater latitude \\
+  $\lambda_\mathrm{site}$  & $128.97^\circ$ & Tsiolkovsky crater longitude \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\noindent\textbf{Software.}
+All computations were performed using Python\,3 with NumPy, SciPy, and
+Matplotlib.
+The simulation code is version-controlled in the Git repository
+\texttt{mahshadrashidi/ALO\_array\_modeling} on GitHub.
+All figures in this report are generated directly from the simulation outputs
+and are reproducible by running \texttt{alo\_geometry\_tradeoff.py}.
+
+\end{document}
