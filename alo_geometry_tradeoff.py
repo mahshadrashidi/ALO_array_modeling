@@ -1269,6 +1269,543 @@ def run_asymmetric_beam_study():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# EXTENDED SOURCE ANALYSIS
+# ══════════════════════════════════════════════════════════════════════════════
+# Use 32×32+5km: HPBW ≈ 8 pixels at 256-grid (main beam clearly resolved)
+# compared to 128×128+5km where HPBW ≈ 2 pixels (too small for dirty images).
+# Geometry differences between ring/Y/random/line are the same at any core size.
+ES_CORE     = 32            # core size for ES demonstration
+ES_DIST_KM  = 5.0           # outrigger distance [km]
+ES_FREQ_MHZ = 30.0          # representative frequency
+ES_N_GRID   = 256           # AF grid resolution
+ES_ASPECT   = 0.25          # minor/major ratio for elongated source test
+ES_SIZES    = np.logspace(-1.3, 0.8, 40)   # source sizes in units of HPBW: 0.05→6
+ES_PAS      = np.linspace(0, 165, 24)      # position angles for orientation test [deg]
+ES_PLOT     = os.path.join(GT_PLOT, "extended_source")
+ES_CSV      = os.path.join(GT_CSV,  "extended_source")
+
+
+def _es_psf(pos_enu, freq_MHz=ES_FREQ_MHZ, n_grid=ES_N_GRID):
+    """Normalized PSF (beam) with NaN outside unit circle replaced by 0."""
+    l_arr, m_arr, B = ab_compute_af(
+        pos_enu, np.ones(len(pos_enu), dtype=complex), freq_MHz, n_grid
+    )
+    return l_arr, m_arr, np.where(np.isnan(B), 0.0, B)
+
+
+def _es_hpbw(l_arr, B):
+    """HPBW [rad] from half-power beam solid angle (B must be NaN-free)."""
+    dl = l_arr[1] - l_arr[0]
+    omega_b = float((B >= 0.5 * B.max()).sum()) * dl * dl
+    return 2.0 * np.sqrt(omega_b / np.pi)
+
+
+def _es_source(l_arr, m_arr, theta_s_rad, pa_deg=0.0, aspect=1.0):
+    """
+    Elliptical Gaussian source (peak=1) centred at (0,0).
+    theta_s_rad : Gaussian sigma along major axis [direction cosines].
+    pa_deg      : position angle CCW from East (l-axis).
+    aspect      : sigma_minor / sigma_major  (1 = circular).
+    Zeroed outside the unit circle.
+    """
+    L, M = np.meshgrid(l_arr, m_arr, indexing="ij")
+    pa   = np.radians(pa_deg)
+    Lr   =  L * np.cos(pa) + M * np.sin(pa)
+    Mr   = -L * np.sin(pa) + M * np.cos(pa)
+    sig_maj = max(theta_s_rad, 1e-9)
+    sig_min = max(theta_s_rad * aspect, 1e-9)
+    I    = np.exp(-0.5 * (Lr**2 / sig_maj**2 + Mr**2 / sig_min**2))
+    I[L**2 + M**2 > 1.0] = 0.0
+    return I
+
+
+def _es_dirty_image(I_true, B):
+    """
+    Dirty image = I_true convolved with PSF B, normalized to peak=1.
+    FFT-based: I_D = IFFT{ FFT{I_true} × FFT{B} }.
+    """
+    from scipy.signal import fftconvolve
+    B_n = B / (B.sum() + 1e-30)
+    I_D = fftconvolve(I_true, B_n, mode="same")
+    pk  = I_D.max()
+    return I_D / (pk + 1e-30)
+
+
+def _es_eta(I_true, B):
+    """
+    Beam-weighted flux recovery fraction.
+      η = ΣΣ I_true(l,m)·B(l,m) / ΣΣ I_true(l,m)
+    For a point source at beam centre  → η = B(0,0) = 1  for ALL arrays.
+    For an extended source             → η < 1, depends on PSF shape.
+    """
+    denom = I_true.sum()
+    return float((I_true * B).sum() / denom) if denom > 0 else 0.0
+
+
+def es_build_configs():
+    """Build one {ES_CORE}×{ES_CORE} + {ES_DIST_KM} km config per geometry."""
+    out_n = CORE_OUT[ES_CORE]
+    cfgs  = {}
+    for geom in GEOMETRIES:
+        pos, cen = LAYOUT_FN[geom](ES_CORE, out_n, ES_DIST_KM)
+        cfgs[geom] = dict(pos_enu=pos, centres=cen)
+    return cfgs
+
+
+def es_plot_psf_and_images(cfgs):
+    """
+    Plot A — 4 rows (geometry) × 5 columns:
+      col 0: Full PSF in dB  (shows sidelobe geometry clearly)
+      col 1: Zoomed PSF (linear) — main beam region only
+      col 2: Point-source dirty image  (= PSF, all arrays identical here)
+      col 3: Extended-source dirty image  θ_s = 2×HPBW
+      col 4: Imaging residual  |dirty_image − true_source|  (θ_s = 2×HPBW)
+    """
+    print("── ES Plot A: PSF and dirty images ──")
+    os.makedirs(ES_PLOT, exist_ok=True)
+
+    col_titles = [
+        "Full PSF  (dB)\nsidelobe geometry",
+        "Main-lobe zoom\n(linear, 10×HPBW)",
+        "Point-source\nresponse  (all same)",
+        "Extended  (2×HPBW)\ndirty image",
+        "Imaging residual\n|dirty − true|",
+    ]
+    fig, axes = plt.subplots(4, 5, figsize=(20, 16))
+    for ci, ct in enumerate(col_titles):
+        axes[0, ci].set_title(ct, fontsize=9, fontweight="bold")
+
+    for gi, geom in enumerate(GEOMETRIES):
+        l_arr, m_arr, B = _es_psf(cfgs[geom]["pos_enu"])
+        hpbw = _es_hpbw(l_arr, B)
+        dl   = l_arr[1] - l_arr[0]
+        L, M = np.meshgrid(l_arr, m_arr, indexing="ij")
+        circ = L**2 + M**2 <= 1.0
+
+        B_dB   = 10 * np.log10(np.where(circ, np.clip(B, 1e-6, None), np.nan))
+        B_lin  = np.where(circ, B, np.nan)
+
+        # Extended source (2×HPBW, circular)
+        I_two    = _es_source(l_arr, m_arr, 2.0 * hpbw)
+        D_two    = _es_dirty_image(I_two, B)
+        I_two_n  = I_two / (I_two.max() + 1e-30)
+        residual = np.abs(D_two - I_two_n)
+        D_two_m  = np.where(circ, D_two, np.nan)
+        resid_m  = np.where(circ, residual, np.nan)
+
+        # Zoom window = ±5×HPBW
+        zoom_r   = 5.0 * hpbw
+        zoom_idx = np.where(np.abs(l_arr) <= zoom_r)[0]
+        if len(zoom_idx) < 3:
+            zoom_idx = np.arange(len(l_arr))
+        l_z = l_arr[zoom_idx]
+        m_z = m_arr[zoom_idx]
+        B_z = B[np.ix_(zoom_idx, zoom_idx)]
+        L_z, M_z = np.meshgrid(l_z, m_z, indexing="ij")
+        B_z_m = np.where(L_z**2 + M_z**2 <= 1.0, B_z, np.nan)
+
+        # Point source: dirty image = PSF (pointed at source = beam peak)
+        D_pt_m = B_lin
+
+        eta_tiny = _es_eta(_es_source(l_arr, m_arr, 0.05 * hpbw), B)
+        eta_two  = _es_eta(I_two, B)
+        print(f"  {geom}: HPBW={np.degrees(hpbw)*60:.1f}′  "
+              f"η_point≈{eta_tiny:.3f}  η_2×HPBW={eta_two:.3f}  "
+              f"diff={eta_tiny - eta_two:.3f}")
+
+        datasets = [
+            (l_arr, m_arr, B_dB,   {"vmin": -30, "vmax": 0,   "cmap": "inferno"}),
+            (l_z,   m_z,   B_z_m,  {"vmin": 0,   "vmax": 1,   "cmap": "inferno"}),
+            (l_arr, m_arr, D_pt_m, {"vmin": 0,   "vmax": 1,   "cmap": "inferno"}),
+            (l_arr, m_arr, D_two_m,{"vmin": 0,   "vmax": 1,   "cmap": "inferno"}),
+            (l_arr, m_arr, resid_m,{"vmin": 0,   "vmax": 0.5, "cmap": "magma"}),
+        ]
+        for ci, (lx, mx, data, kwargs) in enumerate(datasets):
+            ax = axes[gi, ci]
+            im = ax.pcolormesh(lx, mx, data.T, shading="auto", **kwargs)
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            if ci == 0:
+                ax.set_ylabel(f"{GEOM_LABEL[geom]}\nm", fontsize=9)
+            else:
+                ax.set_yticklabels([])
+            if gi == len(GEOMETRIES) - 1:
+                ax.set_xlabel("l", fontsize=8)
+            ax.set_aspect("equal")
+            ax.tick_params(labelsize=6)
+
+    fig.suptitle(
+        f"PSF and Extended-Source Response  "
+        f"({ES_CORE}×{ES_CORE} + {ES_DIST_KM} km  |  {ES_FREQ_MHZ} MHz)\n"
+        "cols 2 & 3 show point vs extended source: geometry only matters for extended emission",
+        fontsize=10,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(os.path.join(ES_PLOT, "psf_and_dirty_images.png"), dpi=120)
+    plt.close()
+    print("  Saved psf_and_dirty_images.png")
+
+
+def es_flux_recovery_vs_size(cfgs):
+    """
+    Plot B — beam-weighted flux recovery η vs source angular size in units of HPBW.
+    Left panel: circular source.  Right panel: elongated source (aspect=ES_ASPECT).
+    All arrays converge to η=1 for point sources; they diverge for extended sources.
+    """
+    print("── ES Plot B: Flux recovery vs source size ──")
+    records = []
+    psfs    = {}
+    hpbws   = {}
+    for geom in GEOMETRIES:
+        l_arr, m_arr, B = _es_psf(cfgs[geom]["pos_enu"])
+        psfs[geom]  = (l_arr, m_arr, B)
+        hpbws[geom] = _es_hpbw(l_arr, B)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+
+    for geom in GEOMETRIES:
+        l_arr, m_arr, B = psfs[geom]
+        hpbw = hpbws[geom]
+        eta_c, eta_e = [], []
+        for sz in ES_SIZES:
+            I_c = _es_source(l_arr, m_arr, sz * hpbw, aspect=1.0)
+            I_e = _es_source(l_arr, m_arr, sz * hpbw, aspect=ES_ASPECT)
+            ec = _es_eta(I_c, B); ee = _es_eta(I_e, B)
+            eta_c.append(ec); eta_e.append(ee)
+            records.append(dict(geom=geom, size_over_hpbw=sz,
+                                eta_circular=ec, eta_elongated=ee))
+        col = GEOM_COLOR[geom]
+        ax1.plot(ES_SIZES, eta_c, lw=2, color=col, label=GEOM_LABEL[geom])
+        ax2.plot(ES_SIZES, eta_e, lw=2, color=col, label=GEOM_LABEL[geom])
+
+    for ax, title in [(ax1, "Circular source  (aspect = 1)"),
+                      (ax2, f"Elongated source  (aspect = {ES_ASPECT})")]:
+        ax.axvline(1.0, color="gray", ls="--", lw=1.2, label="θ_s = HPBW")
+        ax.set_xlabel("Source angular size  θ_s / HPBW", fontsize=10)
+        ax.set_ylabel("Beam-weighted flux recovery  η", fontsize=10)
+        ax.set_xscale("log")
+        ax.set_ylim(0, 1.05)
+        ax.legend(fontsize=9)
+        ax.grid(True, which="both", alpha=0.3)
+        ax.set_title(title, fontsize=10)
+        # Annotate the convergence region
+        ax.annotate("All arrays identical\n(point-source limit)",
+                    xy=(0.07, 0.97), xytext=(0.07, 0.80),
+                    arrowprops=dict(arrowstyle="->", color="dimgray"),
+                    fontsize=7.5, ha="center", color="dimgray")
+
+    fig.suptitle(
+        f"Why Point-Source Detection Is Geometry-Independent\n"
+        f"η = ∫ I_true·B / ∫ I_true  —  "
+        f"{ES_CORE}×{ES_CORE} + {ES_DIST_KM} km  |  {ES_FREQ_MHZ} MHz",
+        fontsize=10,
+    )
+    plt.tight_layout()
+    plt.savefig(os.path.join(ES_PLOT, "flux_recovery_vs_size.png"), dpi=120)
+    plt.close()
+
+    df_rec = pd.DataFrame(records)
+    df_rec.to_csv(os.path.join(ES_CSV, "flux_recovery.csv"), index=False)
+    print("  Saved flux_recovery_vs_size.png, flux_recovery.csv")
+    return df_rec
+
+
+def es_orientation_test(cfgs):
+    """
+    Plot C — flux recovery η vs source position angle (PA) for elongated source.
+    Source: θ_s = 1×HPBW, aspect = ES_ASPECT.
+    Symmetric arrays (ring, line) → flat η(PA).
+    Asymmetric arrays (y_shape, random) → modulated η(PA).
+    Includes an explanation panel on what this means for science.
+    """
+    print("── ES Plot C: Orientation dependence ──")
+    records = []
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig_p, ax_p = plt.subplots(1, 1, figsize=(7, 7),
+                                subplot_kw={"projection": "polar"})
+
+    for geom in GEOMETRIES:
+        l_arr, m_arr, B = _es_psf(cfgs[geom]["pos_enu"])
+        hpbw = _es_hpbw(l_arr, B)
+        etas = []
+        for pa in ES_PAS:
+            I  = _es_source(l_arr, m_arr, 1.0 * hpbw, pa_deg=pa, aspect=ES_ASPECT)
+            ec = _es_eta(I, B)
+            etas.append(ec)
+            records.append(dict(geom=geom, pa_deg=pa, eta=ec))
+        etas = np.array(etas)
+        eta_range = etas.max() - etas.min()
+        col = GEOM_COLOR[geom]
+        lbl = f"{GEOM_LABEL[geom]}  (Δη = {eta_range:.4f})"
+        axes[0].plot(ES_PAS, etas, lw=2, color=col, label=lbl, marker="o", ms=4)
+        # Polar: close the loop by reflecting 0→165 to 180→345
+        pa_full  = np.radians(np.concatenate([ES_PAS, ES_PAS + 180]))
+        eta_full = np.concatenate([etas, etas])
+        ax_p.plot(pa_full, eta_full, lw=2, color=col, label=lbl)
+
+    axes[0].set_xlabel("Source position angle PA [deg]", fontsize=10)
+    axes[0].set_ylabel("Beam-weighted flux recovery  η", fontsize=10)
+    axes[0].set_title(f"η vs Source Orientation  (θ_s = HPBW, aspect = {ES_ASPECT})",
+                      fontsize=10)
+    axes[0].legend(fontsize=8)
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_xlim(0, 165)
+
+    # Explanation panel
+    ax2 = axes[1]
+    ax2.axis("off")
+    explanation = (
+        "Why extended sources reveal beam asymmetry\n"
+        "─────────────────────────────────────────\n\n"
+        "POINT SOURCE  (θ_s → 0)\n"
+        "  η = B(0,0) = 1  for every array\n"
+        "  Only the beam PEAK matters\n"
+        "  → All configs with same N are equivalent\n"
+        "  → Geometry is invisible to detection\n\n"
+        "EXTENDED SOURCE  (θ_s ≳ HPBW)\n"
+        "  η = ∫ I_true(l,m) · B(l,m) dl dm\n"
+        "      ─────────────────────────────\n"
+        "          ∫ I_true(l,m) dl dm\n\n"
+        "  Source now samples the FULL PSF shape\n"
+        "  → Sidelobe asymmetry → η depends on PA\n"
+        "  Symmetric beam  → η(PA) ≈ constant\n"
+        "  Asymmetric beam → η varies with PA\n\n"
+        "CONSEQUENCE FOR SCIENCE\n"
+        "  • Asymmetric beam → orientation-biased\n"
+        "    flux recovery → apparent source\n"
+        "    asymmetry in dirty images\n"
+        "  • Symmetric beam → consistent recovery\n"
+        "    for any source orientation\n"
+        "  • Harder deconvolution with asymmetric\n"
+        "    PSF → larger CLEAN residuals"
+    )
+    ax2.text(0.04, 0.97, explanation, transform=ax2.transAxes,
+             va="top", ha="left", fontsize=9,
+             fontfamily="monospace",
+             bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.85))
+
+    fig.suptitle(
+        f"Orientation-Dependent Flux Recovery  "
+        f"({ES_CORE}×{ES_CORE} + {ES_DIST_KM} km  |  {ES_FREQ_MHZ} MHz)\n"
+        f"Elongated source: θ_s = 1×HPBW, minor/major = {ES_ASPECT}",
+        fontsize=10,
+    )
+    plt.tight_layout()
+    fig.savefig(os.path.join(ES_PLOT, "orientation_dependence.png"), dpi=120)
+    plt.close(fig)
+
+    ax_p.set_title(
+        f"Flux Recovery vs Source PA  ({ES_FREQ_MHZ} MHz)\n"
+        f"θ_s = HPBW, aspect = {ES_ASPECT}",
+        pad=15, fontsize=10,
+    )
+    ax_p.legend(loc="upper right", bbox_to_anchor=(1.4, 1.1), fontsize=8)
+    fig_p.tight_layout()
+    fig_p.savefig(os.path.join(ES_PLOT, "orientation_polar.png"), dpi=120)
+    plt.close(fig_p)
+
+    df_or = pd.DataFrame(records)
+    df_or.to_csv(os.path.join(ES_CSV, "orientation_dependence.csv"), index=False)
+    print("  Saved orientation_dependence.png, orientation_polar.png, "
+          "orientation_dependence.csv")
+    return df_or
+
+
+def es_sidelobe_sectors(cfgs):
+    """
+    Plot D — sidelobe power in 8 azimuthal sectors (polar bar charts).
+    Symmetric arrays → equal power per sector.
+    Asymmetric arrays → uneven distribution → direction-dependent contamination
+    for extended sources whose emission extends into the sidelobe region.
+    """
+    print("── ES Plot D: Sidelobe power by azimuthal sector ──")
+
+    n_sectors = 8
+    sector_edges = np.linspace(0, 2 * np.pi, n_sectors + 1)
+    sector_mids  = 0.5 * (sector_edges[:-1] + sector_edges[1:])
+    sector_width = 2 * np.pi / n_sectors
+    # CCW from East: E, NE, N, NW, W, SW, S, SE
+    sector_labels = ["E", "NE", "N", "NW", "W", "SW", "S", "SE"]
+
+    records = []
+    fig, axes = plt.subplots(2, 2, figsize=(11, 10),
+                             subplot_kw={"projection": "polar"})
+    axes = axes.ravel()
+
+    for gi, geom in enumerate(GEOMETRIES):
+        l_arr, m_arr, B = _es_psf(cfgs[geom]["pos_enu"])
+        hpbw = _es_hpbw(l_arr, B)
+        L, M = np.meshgrid(l_arr, m_arr, indexing="ij")
+        r_arr     = np.sqrt(L**2 + M**2)
+        theta_arr = np.arctan2(M, L) % (2 * np.pi)   # map [-π,π] → [0, 2π]
+
+        # Sidelobe region: beyond main beam, within unit circle
+        sl_mask = (r_arr > hpbw) & (r_arr <= 1.0)
+        power   = []
+        for si in range(n_sectors):
+            ang_mask = (theta_arr >= sector_edges[si]) & (theta_arr < sector_edges[si + 1])
+            sel = sl_mask & ang_mask
+            pw  = float(B[sel].sum()) if sel.any() else 0.0
+            power.append(pw)
+            records.append(dict(geom=geom, sector=sector_labels[si], power=pw))
+
+        power      = np.array(power)
+        total      = power.sum()
+        # Normalise so that 1.0 = perfectly uniform distribution
+        power_norm = (power / (total / n_sectors + 1e-30)) if total > 0 else np.ones(n_sectors)
+        asym_idx   = power_norm.std() / (power_norm.mean() + 1e-30)
+
+        ax = axes[gi]
+        bars = ax.bar(sector_mids, power_norm, width=sector_width * 0.82,
+                      color=GEOM_COLOR[geom], alpha=0.75, align="center")
+        ax.axhline(1.0, color="gray", lw=1.2, ls="--", alpha=0.8)
+        ax.set_thetagrids(np.degrees(sector_mids), sector_labels, fontsize=9)
+        ax.set_ylim(0, max(2.5, power_norm.max() * 1.15))
+        ax.set_title(f"{GEOM_LABEL[geom]}", pad=15, fontsize=11, fontweight="bold")
+        ax.text(0.5, -0.10,
+                f"Asymmetry index σ/μ = {asym_idx:.3f}",
+                transform=ax.transAxes, ha="center", fontsize=9,
+                color="darkred" if asym_idx > 0.05 else "navy")
+
+    fig.suptitle(
+        f"Sidelobe Power per Azimuthal Sector  "
+        f"({ES_CORE}×{ES_CORE} + {ES_DIST_KM} km  |  {ES_FREQ_MHZ} MHz)\n"
+        "Dashed circle = perfectly uniform distribution (σ/μ = 0)\n"
+        "Extended source emission entering the sidelobe zone is recovered unevenly "
+        "when σ/μ > 0",
+        fontsize=10,
+    )
+    plt.tight_layout()
+    fig.savefig(os.path.join(ES_PLOT, "sidelobe_sectors.png"), dpi=120)
+    plt.close(fig)
+
+    df_sl = pd.DataFrame(records)
+    df_sl.to_csv(os.path.join(ES_CSV, "sidelobe_sectors.csv"), index=False)
+    print("  Saved sidelobe_sectors.png, sidelobe_sectors.csv")
+    return df_sl
+
+
+def es_summary_comparison(cfgs, df_rec, df_or):
+    """
+    Plot E — two-panel summary.
+    Left:  grouped bar chart — η(point) vs η(2×HPBW) for each geometry.
+           Shows convergence at small sizes and divergence at large sizes.
+    Right: grouped bar chart — orientation spread Δη for each geometry.
+           Shows which arrays have PA-biased extended-source response.
+    """
+    print("── ES Plot E: Point vs extended summary ──")
+    geom_order = GEOMETRIES
+    x = np.arange(len(geom_order))
+    w = 0.35
+    colors = [GEOM_COLOR[g] for g in geom_order]
+
+    # eta at ~0 (point) and ~2×HPBW (extended)
+    pt_mask  = df_rec["size_over_hpbw"] < 0.08
+    ext_mask = (df_rec["size_over_hpbw"] >= 1.8) & (df_rec["size_over_hpbw"] <= 2.3)
+
+    eta_pt_c  = [df_rec[pt_mask  & (df_rec.geom == g)]["eta_circular"].mean()
+                 for g in geom_order]
+    eta_ex_c  = [df_rec[ext_mask & (df_rec.geom == g)]["eta_circular"].mean()
+                 for g in geom_order]
+    eta_pt_e  = [df_rec[pt_mask  & (df_rec.geom == g)]["eta_elongated"].mean()
+                 for g in geom_order]
+    eta_ex_e  = [df_rec[ext_mask & (df_rec.geom == g)]["eta_elongated"].mean()
+                 for g in geom_order]
+
+    # PA spread Δη per geometry (from orientation test)
+    delta_eta = []
+    for g in geom_order:
+        sub = df_or[df_or.geom == g]["eta"]
+        delta_eta.append(float(sub.max() - sub.min()))
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+
+    # Left panel — circular source
+    ax1.bar(x - w/2, eta_pt_c, w, color=colors, alpha=0.45, hatch="//",
+            edgecolor="k", linewidth=0.6, label="Point source  (θ→0)")
+    ax1.bar(x + w/2, eta_ex_c, w, color=colors, alpha=0.90,
+            edgecolor="k", linewidth=0.6, label="Extended  (θ_s = 2×HPBW)")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([GEOM_LABEL[g] for g in geom_order], fontsize=10)
+    ax1.set_ylabel("Beam-weighted flux recovery  η", fontsize=10)
+    ax1.set_ylim(0, 1.15)
+    ax1.axhline(1.0, color="gray", ls="--", lw=1)
+    ax1.legend(fontsize=9)
+    ax1.grid(axis="y", alpha=0.3)
+    ax1.set_title("Circular source: η does not depend on orientation", fontsize=9)
+    for xi, (ep, ee) in enumerate(zip(eta_pt_c, eta_ex_c)):
+        ax1.annotate(f"Δ={ep-ee:.3f}", xy=(xi, ee + 0.02), ha="center",
+                     fontsize=7.5, color="darkred")
+
+    # Right panel — orientation spread Δη
+    bar_cols = [GEOM_COLOR[g] for g in geom_order]
+    bars = ax2.bar(x, delta_eta, 0.55, color=bar_cols, alpha=0.85,
+                   edgecolor="k", linewidth=0.6)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([GEOM_LABEL[g] for g in geom_order], fontsize=10)
+    ax2.set_ylabel("Δη = max η − min η  over all source PA", fontsize=10)
+    ax2.set_ylim(0, max(delta_eta) * 1.35 + 1e-5)
+    ax2.grid(axis="y", alpha=0.3)
+    ax2.set_title(f"PA-orientation spread  (elongated source, aspect={ES_ASPECT})",
+                  fontsize=9)
+    for xi, de in enumerate(delta_eta):
+        ax2.text(xi, de + max(delta_eta) * 0.03, f"{de:.4f}",
+                 ha="center", fontsize=9, fontweight="bold")
+    ax2.axhline(0, color="gray", lw=1)
+    ax2.text(0.02, 0.95,
+             "Larger Δη → more orientation-biased\nflux recovery for extended sources",
+             transform=ax2.transAxes, fontsize=8.5, va="top",
+             color="darkred",
+             bbox=dict(boxstyle="round", facecolor="mistyrose", alpha=0.7))
+
+    fig.suptitle(
+        f"Point Source vs Extended Source  —  Summary\n"
+        f"({ES_CORE}×{ES_CORE} + {ES_DIST_KM} km  |  {ES_FREQ_MHZ} MHz  |  "
+        f"θ_s = 2×HPBW for extended case)",
+        fontsize=10,
+    )
+    plt.tight_layout()
+    fig.savefig(os.path.join(ES_PLOT, "point_vs_extended_summary.png"), dpi=120)
+    plt.close(fig)
+    print("  Saved point_vs_extended_summary.png")
+
+
+def run_extended_source_analysis():
+    """
+    Compare symmetric (ring, line) vs asymmetric (y_shape, random) array responses
+    to point sources and extended sources.
+    Key result: all arrays are equivalent for point-source detection;
+    geometry matters only when observing resolved/extended emission.
+    """
+    print("\n" + "=" * 70)
+    print("  EXTENDED SOURCE ANALYSIS")
+    print(f"  Core {ES_CORE}×{ES_CORE} + {ES_DIST_KM} km  |  {ES_FREQ_MHZ} MHz")
+    print("=" * 70)
+    os.makedirs(ES_PLOT, exist_ok=True)
+    os.makedirs(ES_CSV,  exist_ok=True)
+
+    cfgs   = es_build_configs()
+    es_plot_psf_and_images(cfgs)
+    df_rec = es_flux_recovery_vs_size(cfgs)
+    df_or  = es_orientation_test(cfgs)
+    es_sidelobe_sectors(cfgs)
+    es_summary_comparison(cfgs, df_rec, df_or)
+
+    # Print key results
+    pt_mask  = df_rec["size_over_hpbw"] < 0.08
+    ext_mask = (df_rec["size_over_hpbw"] >= 1.8) & (df_rec["size_over_hpbw"] <= 2.3)
+    print("\n  Flux recovery summary (circular source):")
+    for g in GEOMETRIES:
+        ep = df_rec[pt_mask  & (df_rec.geom == g)]["eta_circular"].mean()
+        ee = df_rec[ext_mask & (df_rec.geom == g)]["eta_circular"].mean()
+        deta = df_or[df_or.geom == g]["eta"].max() - df_or[df_or.geom == g]["eta"].min()
+        print(f"    {GEOM_LABEL[g]:8s}  η_point={ep:.4f}  η_2xHPBW={ee:.4f}  "
+              f"Δη(PA)={deta:.4f}")
+
+    print(f"\n  Outputs: {ES_PLOT}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
@@ -1306,6 +1843,9 @@ def main():
 
     # Asymmetric beam study
     run_asymmetric_beam_study()
+
+    # Extended source analysis
+    run_extended_source_analysis()
 
     print(f"\nAll outputs saved to:\n  {GT_PLOT}\n  {GT_CSV}")
     print("ALO Geometry Trade-off Study — Done")
