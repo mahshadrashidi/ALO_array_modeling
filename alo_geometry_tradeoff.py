@@ -39,7 +39,9 @@ from alo_array_modeling import (
     rect_array_enu, compute_af, beam_metrics,
     sigma_thermal_Jy, confusion_limit_Jy, required_t_hours,
     feasibility as classify_feasibility, load_targets,
+    core_edge_m, A_EFF_ELE,
     D_SPACE, C, NSIGMA, ETA,
+    PHI_DEG, LAM_DEG,
     BAND_LABELS, BAND_CTR, SUBBANDS, BANDWIDTHS,
     PLOT_DIR, CSV_DIR,
 )
@@ -2301,12 +2303,1344 @@ def run_extended_source_analysis():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# NEW CONFIGURATIONS  (a – f)
+# Distance is measured from the edge of the core, not from the core centre.
+# Outrigger sub-array sizes: 2×2 for 32×32 core, 4×4 for 128×128 core.
+# ══════════════════════════════════════════════════════════════════════════════
+
+NEW_OUT_NSIDE   = {32: 2, 128: 4}           # outrigger sub-array side length
+NEW_SHORT_DISTS = [250, 500, 750, 1000]      # edge-based distances [m]
+NEW_LONG_DISTS  = [1250, 2500, 3750, 5000]  # edge-based distances [m]
+NEW_CROSS_N_ARM = 4                          # outrigger sub-arrays PER arm
+
+NEW_PLOT = os.path.join(GT_PLOT, "new_configs")
+NEW_CSV  = os.path.join(GT_CSV,  "new_configs")
+os.makedirs(NEW_PLOT, exist_ok=True)
+os.makedirs(NEW_CSV,  exist_ok=True)
+
+
+def layout_ring_edge(core_n, out_n, dist_from_edge_m):
+    """
+    Ring: one out_n×out_n outrigger in each cardinal direction.
+    dist_from_edge_m is the gap between the outermost core element
+    and the nearest element of the outrigger sub-array.
+    Centre of each outrigger = core_edge_m(core_n) + dist_from_edge_m.
+    """
+    d = core_edge_m(core_n) + dist_from_edge_m
+    angles  = np.linspace(0, 2 * np.pi, 4, endpoint=False)
+    centres = [(d * np.cos(a), d * np.sin(a)) for a in angles]
+    parts   = [rect_array_enu(core_n, D_SPACE)]
+    for cx, cy in centres:
+        parts.append(rect_array_enu(out_n, D_SPACE, cx, cy))
+    return np.vstack(parts), centres
+
+
+def layout_cross_multi_arm(core_n, out_n, arm_dists_from_edge_m):
+    """
+    Cross: 4 arms (N/S/E/W), each arm has len(arm_dists_from_edge_m) outriggers
+    equally spaced (in absolute terms: at the given distances from the core edge).
+    arm_dists_from_edge_m = e.g. [1250, 2500, 3750, 5000] m from edge.
+    """
+    edge = core_edge_m(core_n)
+    dists_from_centre = [edge + d for d in arm_dists_from_edge_m]
+    arm_dirs = [(0.0, 1.0), (0.0, -1.0), (1.0, 0.0), (-1.0, 0.0)]  # N S E W
+    parts  = [rect_array_enu(core_n, D_SPACE)]
+    centres = []
+    for dx, dy in arm_dirs:
+        for dc in dists_from_centre:
+            cx, cy = dx * dc, dy * dc
+            centres.append((cx, cy))
+            parts.append(rect_array_enu(out_n, D_SPACE, cx, cy))
+    return np.vstack(parts), centres
+
+
+def build_new_configs():
+    """
+    Build all new configurations a–f and return as a dict.
+    Keys: descriptive names encoding geometry/core/distance.
+    """
+    print("\n── Build new configurations (a–f) ──")
+    configs = {}
+
+    for core_n, dists_list, label in [
+        (32,  NEW_SHORT_DISTS, "short"),
+        (32,  NEW_LONG_DISTS,  "long"),
+        (128, NEW_SHORT_DISTS, "short"),
+        (128, NEW_LONG_DISTS,  "long"),
+    ]:
+        out_n = NEW_OUT_NSIDE[core_n]
+        for d_m in dists_list:
+            name = f"ring_new_c{core_n}x{core_n}_out{out_n}x{out_n}_d{int(d_m)}m"
+            pos, centres = layout_ring_edge(core_n, out_n, d_m)
+            B_max = max_baseline_m(centres, core_n)
+            N_core = core_n ** 2
+            meta = dict(core_n=core_n, out_n=out_n, out_centres=centres,
+                        N_core=N_core, N_out_each=out_n**2, N_total=len(pos),
+                        dist_from_edge_m=d_m, geom="ring_new", B_max_m=B_max,
+                        label=f"Ring {core_n}×{core_n} + {out_n}×{out_n} @ "
+                              f"{d_m/1e3:.3g} km from edge ({label})")
+            configs[name] = dict(pos_enu=pos, meta=meta)
+            edge = core_edge_m(core_n)
+            centre_dist_km = (edge + d_m) / 1e3
+            print(f"  {name}: {len(pos)} elem, "
+                  f"B_max={B_max/1e3:.2f} km, "
+                  f"centre@{centre_dist_km:.3f} km")
+
+    # Cross configs e (32×32) and f (128×128)
+    arm_dists = NEW_LONG_DISTS   # [1250, 2500, 3750, 5000] m from edge
+    for core_n in [32, 128]:
+        out_n = NEW_OUT_NSIDE[core_n]
+        name  = f"cross_new_c{core_n}x{core_n}_out{out_n}x{out_n}_4arm"
+        pos, centres = layout_cross_multi_arm(core_n, out_n, arm_dists)
+        B_max = max_baseline_m(centres, core_n)
+        N_core = core_n ** 2
+        meta = dict(core_n=core_n, out_n=out_n, out_centres=centres,
+                    N_core=N_core, N_out_each=out_n**2, N_total=len(pos),
+                    dist_from_edge_m=arm_dists[-1], geom="cross_new",
+                    B_max_m=B_max,
+                    label=f"Cross {core_n}×{core_n} + {out_n}×{out_n} "
+                          f"({NEW_CROSS_N_ARM}/arm, last@5 km from edge)")
+        configs[name] = dict(pos_enu=pos, meta=meta)
+        print(f"  {name}: {len(pos)} elem, B_max={B_max/1e3:.2f} km")
+
+    print(f"  Total new configurations: {len(configs)}")
+    return configs
+
+
+# ── Per-configuration individual plots ───────────────────────────────────────
+
+def _new_config_savedir(name):
+    d = os.path.join(NEW_PLOT, name)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def plot_new_layout(name, cfg):
+    """Separate array geometry plot for one new configuration."""
+    savedir = _new_config_savedir(name)
+    pos    = cfg["pos_enu"]
+    meta   = cfg["meta"]
+    N_core = meta["N_core"]
+
+    fig, ax = plt.subplots(figsize=(7, 7))
+    ax.scatter(pos[:N_core, 0], pos[:N_core, 1],
+               s=0.5, c="steelblue", alpha=0.8,
+               label=f"Core {meta['core_n']}×{meta['core_n']}")
+    ax.scatter(pos[N_core:, 0], pos[N_core:, 1],
+               s=4, c="tomato", alpha=0.9,
+               label=f"Outrigger {meta['out_n']}×{meta['out_n']}")
+    for cx, cy in meta["out_centres"]:
+        ax.plot(cx, cy, "r+", ms=7, mew=1.3)
+    ax.set_xlabel("East [m]"); ax.set_ylabel("North [m]")
+    ax.set_title(f"Layout: {meta['label']}\nN = {meta['N_total']}, "
+                 f"B_max = {meta['B_max_m']/1e3:.2f} km",
+                 fontsize=9)
+    ax.legend(markerscale=5, fontsize=8)
+    ax.set_aspect("equal"); ax.grid(True, alpha=0.25)
+    plt.tight_layout()
+    plt.savefig(os.path.join(savedir, "layout.png"), dpi=100)
+    plt.close()
+
+
+def plot_new_beam(name, cfg, af_data):
+    """2-D + 1-D beam pattern at all 4 sub-bands for one new configuration."""
+    savedir = _new_config_savedir(name)
+    fig, axes = plt.subplots(4, 2, figsize=(11, 18))
+    for ri, (bl, fc) in enumerate(zip(BAND_LABELS, BAND_CTR)):
+        l, m, AF_dB, B_norm = af_data[bl]
+        mid = len(m) // 2
+
+        im = axes[ri, 0].pcolormesh(l, m, AF_dB, vmin=-30, vmax=0,
+                                     cmap="inferno", shading="auto")
+        plt.colorbar(im, ax=axes[ri, 0], label="|AF|² [dB]", fraction=0.046)
+        cs = axes[ri, 0].contour(l, m, B_norm, levels=CONTOUR_LVL,
+                                  colors=CONTOUR_COL, linewidths=[0.7, 0.9, 1.2])
+        axes[ri, 0].clabel(cs, fmt={lv: f"{int(lv*100)}%"
+                                    for lv in CONTOUR_LVL}, fontsize=7)
+        axes[ri, 0].set_aspect("equal")
+        axes[ri, 0].set_title(f"2-D beam  {bl} MHz", fontsize=9)
+        axes[ri, 0].set_xlabel("l"); axes[ri, 0].set_ylabel("m")
+
+        cut = 10 * np.log10(B_norm[mid, :] + 1e-20)
+        axes[ri, 1].plot(l, cut, lw=1.5)
+        axes[ri, 1].axhline(-3,  color="red",    ls="--", lw=0.9, label="−3 dB")
+        axes[ri, 1].axhline(-10, color="orange",  ls=":",  lw=0.9, label="−10 dB")
+        hpbw_rad = 2 * np.sqrt(float(np.sum(B_norm >= 0.5)) *
+                                ((l[1]-l[0])**2) / np.pi)
+        mtr = beam_metrics(B_norm, l, m, fc)
+        axes[ri, 1].set_title(f"1-D cut (m=0)  {bl} MHz\n"
+                               f"HPBW={np.degrees(hpbw_rad)*60:.1f}′  "
+                               f"MSL={mtr['MSL_dB']:.1f} dB", fontsize=9)
+        axes[ri, 1].set_xlabel("l"); axes[ri, 1].set_ylabel("Power [dB]")
+        axes[ri, 1].set_ylim(-35, 2)
+        axes[ri, 1].legend(fontsize=8); axes[ri, 1].grid(True, alpha=0.3)
+
+    fig.suptitle(f"Beam Pattern — {cfg['meta']['label']}", fontsize=10,
+                 fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(savedir, "beam_pattern.png"), dpi=100)
+    plt.close()
+
+
+def plot_new_uv(name, cfg):
+    """Station-level UV coverage with multi-frequency synthesis for one config."""
+    savedir = _new_config_savedir(name)
+    sxy = np.array([(0.0, 0.0)] +
+                   [(cx, cy) for cx, cy in cfg["meta"]["out_centres"]])
+    fig, ax = plt.subplots(figsize=(7, 7))
+    handles = []
+    for bl, ch in SUBBAND_CH.items():
+        u, v = _uv_from_stations(sxy, ch)
+        sc = ax.scatter(u / 1e3, v / 1e3, s=5, alpha=0.7,
+                        color=SUBBAND_CH_COLOR[bl], linewidths=0, label=f"{bl} MHz")
+        handles.append(sc)
+    ax.set_xlabel("u  [kλ]"); ax.set_ylabel("v  [kλ]")
+    ax.set_title(f"UV Coverage — {cfg['meta']['label']}", fontsize=9)
+    ax.set_aspect("equal")
+    ax.axhline(0, color="gray", lw=0.4, alpha=0.5)
+    ax.axvline(0, color="gray", lw=0.4, alpha=0.5)
+    ax.grid(True, alpha=0.2)
+    ax.legend(handles=handles, labels=[f"{bl} MHz" for bl in SUBBAND_CH],
+              fontsize=8, markerscale=3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(savedir, "uv_coverage.png"), dpi=100)
+    plt.close()
+
+
+def plot_new_sensitivity(name, cfg, t_arr=None):
+    """Sensitivity vs integration time plot for one new configuration."""
+    savedir = _new_config_savedir(name)
+    if t_arr is None:
+        t_arr = np.logspace(-2, 4, 400)
+    meta  = cfg["meta"]
+    N     = meta["N_total"]
+    B_max = meta["B_max_m"]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    band_colors = {"1-5": "#E53935", "5-10": "#FB8C00",
+                   "10-20": "#1E88E5", "20-40": "#8E24AA"}
+    for bl, (f_lo, f_hi), fc in zip(BAND_LABELS, SUBBANDS, BAND_CTR):
+        bw  = f_hi - f_lo
+        sc  = confusion_limit_Jy(fc, B_max)
+        st1 = sigma_thermal_Jy(N, fc, bw, 1.0)
+        stot = np.sqrt((st1 / np.sqrt(t_arr)) ** 2 + sc ** 2)
+        ax.loglog(t_arr, NSIGMA * stot * 1e3,
+                  color=band_colors[bl], lw=2, label=f"{bl} MHz")
+        ax.axhline(NSIGMA * sc * 1e3, color=band_colors[bl],
+                   ls=":", lw=0.8, alpha=0.6)
+
+    ax.set_xlabel("Integration time [h]", fontsize=10)
+    ax.set_ylabel("5σ Total Sensitivity [mJy]", fontsize=10)
+    ax.set_title(f"Sensitivity vs Integration Time\n{meta['label']}", fontsize=9)
+    ax.legend(fontsize=9); ax.grid(True, alpha=0.3, which="both")
+    ax.text(0.97, 0.03, "Dotted = confusion floor",
+            transform=ax.transAxes, fontsize=8, ha="right", color="gray",
+            style="italic")
+    plt.tight_layout()
+    plt.savefig(os.path.join(savedir, "sensitivity.png"), dpi=100)
+    plt.close()
+
+
+def plot_new_detections(name, cfg, df_sens_cfg):
+    """Bar chart + target list for one new configuration."""
+    savedir = _new_config_savedir(name)
+    meta = cfg["meta"]
+
+    # Count feasible per band
+    band_feas = {}
+    feas_names = set()
+    for bl in BAND_LABELS:
+        sub = df_sens_cfg[(df_sens_cfg["frequency_band"] == bl) &
+                          (df_sens_cfg["feasibility"] == "feasible")]
+        unames = sub["target_name"].unique()
+        band_feas[bl] = len(unames)
+        feas_names.update(unames)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+    band_colors = {"1-5": "#E53935", "5-10": "#FB8C00",
+                   "10-20": "#1E88E5", "20-40": "#8E24AA"}
+
+    # Left: bar chart
+    ax1.bar(BAND_LABELS, [band_feas[b] for b in BAND_LABELS],
+            color=[band_colors[b] for b in BAND_LABELS],
+            edgecolor="white", lw=0.5)
+    for i, bl in enumerate(BAND_LABELS):
+        ax1.text(i, band_feas[bl] + 0.1, str(band_feas[bl]),
+                 ha="center", va="bottom", fontsize=11, fontweight="bold")
+    ax1.set_xlabel("Frequency band [MHz]", fontsize=10)
+    ax1.set_ylabel("Feasible targets (t < 100 h)", fontsize=10)
+    ax1.set_title(f"Detection yield per band\nTotal unique: {len(feas_names)}",
+                  fontsize=9)
+    ax1.grid(axis="y", alpha=0.3)
+
+    # Right: scatter of flux vs required t for feasible targets
+    if len(df_sens_cfg):
+        best_t = df_sens_cfg.groupby("target_name")["required_t_h"].min().reset_index()
+        feas_df = df_sens_cfg[df_sens_cfg["target_name"].isin(feas_names)].drop_duplicates(
+            subset=["target_name"])
+        feas_merged = feas_df.merge(best_t, on="target_name")
+        if len(feas_merged):
+            ax2.scatter(feas_merged["target_flux_mJy"],
+                        feas_merged["required_t_h_y"],
+                        c="steelblue", alpha=0.7, edgecolors="k", lw=0.4)
+            ax2.axhline(100, color="red", ls="--", lw=1.2, label="100 h threshold")
+            ax2.set_xscale("log"); ax2.set_yscale("log")
+            ax2.set_xlabel("Target flux [mJy]", fontsize=10)
+            ax2.set_ylabel("Required integration time [h]", fontsize=10)
+            ax2.set_title("Feasible targets: flux vs required time", fontsize=9)
+            ax2.legend(fontsize=9); ax2.grid(True, alpha=0.3, which="both")
+            for _, row in feas_merged.iterrows():
+                if row["required_t_h_y"] < 100:
+                    ax2.annotate(row["target_name"][:12],
+                                 (row["target_flux_mJy"], row["required_t_h_y"]),
+                                 fontsize=5.5, alpha=0.7,
+                                 xytext=(2, 2), textcoords="offset points")
+
+    fig.suptitle(f"Detection Results — {meta['label']}", fontsize=10,
+                 fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(savedir, "detections.png"), dpi=100)
+    plt.close()
+
+    # Save target list
+    if feas_names:
+        with open(os.path.join(savedir, "feasible_targets.txt"), "w") as fh:
+            fh.write(f"# Feasible targets (<100h) for {name}\n")
+            for t in sorted(feas_names):
+                fh.write(t + "\n")
+
+
+def compute_new_sensitivity(configs, targets):
+    """Sensitivity and detection analysis for all new configurations."""
+    print("\n── Sensitivity: new configurations ──")
+    rows = []
+    for name, cfg in configs.items():
+        meta  = cfg["meta"]
+        N     = meta["N_total"]
+        B_max = meta["B_max_m"]
+        for bl, (f_lo, f_hi), fc in zip(BAND_LABELS, SUBBANDS, BAND_CTR):
+            bw = f_hi - f_lo
+            sc_Jy = confusion_limit_Jy(fc, B_max)
+            st_Jy = sigma_thermal_Jy(N, fc, bw, 1.0)
+            band_tgts = targets[
+                (targets["frequency_MHz"] >= f_lo) &
+                (targets["frequency_MHz"] <  f_hi)
+            ]
+            for _, trow in band_tgts.iterrows():
+                t_h  = required_t_hours(trow["flux_mJy"], N, fc, bw, B_max)
+                fc_s = classify_feasibility(t_h)
+                rows.append(dict(
+                    config_name=name,
+                    label=meta["label"],
+                    N_elements=N,
+                    max_baseline_m=round(B_max, 1),
+                    frequency_band=bl,
+                    freq_centre_MHz=fc,
+                    thermal_sens_Jy=st_Jy,
+                    confusion_Jy=sc_Jy,
+                    target_name=trow["Name"],
+                    target_flux_mJy=trow["flux_mJy"],
+                    target_freq_MHz=trow["frequency_MHz"],
+                    required_t_h=t_h if np.isfinite(t_h) else 1e9,
+                    feasibility=fc_s,
+                ))
+    df = pd.DataFrame(rows)
+    df.to_csv(os.path.join(NEW_CSV, "new_configs_sensitivity.csv"), index=False)
+    print(f"  Saved new_configs_sensitivity.csv  ({len(df)} rows)")
+    return df
+
+
+def run_new_configs_analysis(targets):
+    """
+    Full analysis pipeline for new configurations a–f:
+    1. Build configurations
+    2. Compute AF for all configs × 4 bands
+    3. Produce individual plots (layout, beam, UV, sensitivity, detections) per config
+    4. Compute sensitivity and detection yield
+    5. Print summary comparison table
+    """
+    print("\n" + "=" * 72)
+    print("  NEW CONFIGURATIONS ANALYSIS  (a–f)")
+    print("=" * 72)
+
+    configs = build_new_configs()
+
+    # Compute AF for every config × band
+    print("\n── Computing AF for new configurations ──")
+    af_store_new = {}
+    for name, cfg in configs.items():
+        af_store_new[name] = {}
+        for bl, fc in zip(BAND_LABELS, BAND_CTR):
+            l, m, AF_dB, B_norm = compute_af(cfg["pos_enu"], cfg["meta"], fc, N_GRID)
+            af_store_new[name][bl] = (l, m, AF_dB, B_norm)
+
+    # Per-configuration individual plots
+    print("\n── Per-configuration plots ──")
+    for name, cfg in configs.items():
+        plot_new_layout(name, cfg)
+        plot_new_beam(name, cfg, af_store_new[name])
+        plot_new_uv(name, cfg)
+        plot_new_sensitivity(name, cfg)
+        print(f"  Layout/beam/UV/sensitivity plots → {name}/")
+
+    # Sensitivity + detection
+    df_sens_new = compute_new_sensitivity(configs, targets)
+
+    for name, cfg in configs.items():
+        df_cfg = df_sens_new[df_sens_new["config_name"] == name]
+        plot_new_detections(name, cfg, df_cfg)
+        print(f"  Detection plot → {name}/detections.png")
+
+    # Summary table
+    print("\n── New configurations summary ──")
+    print(f"  {'Config':50s}  {'N_elem':>7}  {'B_max km':>9}  "
+          f"{'n_det(<100h)':>12}  {'n_det(100-1000h)':>16}")
+    print("  " + "-" * 100)
+
+    summary_rows = []
+    for name, cfg in configs.items():
+        meta  = cfg["meta"]
+        N     = meta["N_total"]
+        B_max = meta["B_max_m"]
+        df_cfg = df_sens_new[df_sens_new["config_name"] == name]
+        best_t = df_cfg.groupby("target_name")["required_t_h"].min()
+        n_feas = int((best_t < 100).sum())
+        n_asp  = int(((best_t >= 100) & (best_t < 1000)).sum())
+        feasible_names = list(best_t[best_t < 100].index)
+        print(f"  {meta['label']:50s}  {N:>7d}  {B_max/1e3:>9.2f}  "
+              f"{n_feas:>12d}  {n_asp:>16d}")
+        summary_rows.append(dict(
+            config_name=name, label=meta["label"],
+            N_elements=N, B_max_km=round(B_max/1e3, 3),
+            n_feasible=n_feas, n_aspirational=n_asp,
+            feasible_targets="; ".join(feasible_names),
+        ))
+
+    df_sum = pd.DataFrame(summary_rows)
+    df_sum.to_csv(os.path.join(NEW_CSV, "new_configs_summary.csv"), index=False)
+    print(f"\n  Saved new_configs_summary.csv")
+    return configs, af_store_new, df_sens_new, df_sum
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADVANCED ANALYSIS 1: WEIGHTED BEAMFORMING (HANNING + TAYLOR TAPER)
+# ══════════════════════════════════════════════════════════════════════════════
+ADV_PLOT = os.path.join(GT_PLOT, "advanced")
+ADV_CSV  = os.path.join(GT_CSV,  "advanced")
+os.makedirs(ADV_PLOT, exist_ok=True)
+os.makedirs(ADV_CSV,  exist_ok=True)
+
+
+def _radial_weights(pos_enu, taper="hanning", n_side_bar=None, sll_db=-20.0):
+    """
+    Compute scalar weights for each element based on its distance from
+    the array centre.  Taper is applied to the 2-D radial coordinate,
+    normalised to [0, 1] within the core footprint.
+
+    taper : 'uniform' | 'hanning' | 'taylor'
+    n_side_bar : only needed for 'taylor'; number of equal-sidelobe bars
+                 (ignored if scipy.signal.taylor is unavailable)
+    """
+    r     = np.sqrt(pos_enu[:, 0]**2 + pos_enu[:, 1]**2)
+    r_max = r.max()
+    r_n   = r / (r_max + 1e-12)   # normalised [0, 1]
+
+    if taper == "uniform":
+        return np.ones(len(pos_enu))
+
+    if taper == "hanning":
+        return 0.5 + 0.5 * np.cos(np.pi * r_n)   # Hanning (von Hann) taper
+
+    if taper == "taylor":
+        try:
+            from scipy.signal.windows import taylor as scipy_taylor
+            n_pts  = 1024
+            win_1d = scipy_taylor(n_pts, nbar=n_side_bar or 5, sll=abs(sll_db))
+            # Map normalised radius [0, 1] → index [0, n_pts-1]
+            idx = np.clip((r_n * (n_pts - 1)).astype(int), 0, n_pts - 1)
+            return win_1d[idx]
+        except ImportError:
+            # Fallback: analytic Taylor approximation
+            return (1.0 - r_n ** 2) ** 2   # Blackman-like
+
+    return np.ones(len(pos_enu))
+
+
+def _weighted_af(pos_enu, weights, freq_MHz, n_grid=256):
+    """Compute normalised |AF|² using per-element weights."""
+    k     = 2 * np.pi * freq_MHz * 1e6 / C
+    l_arr = np.linspace(-1, 1, n_grid)
+    m_arr = np.linspace(-1, 1, n_grid)
+    Phi_x = np.exp(1j * k * np.outer(pos_enu[:, 0], l_arr))
+    Phi_y = np.exp(1j * k * np.outer(pos_enu[:, 1], m_arr))
+    AF    = (weights[:, None] * Phi_x).T @ Phi_y
+    B     = np.abs(AF) ** 2
+    B_n   = B / (B.max() + 1e-30)
+    L, M  = np.meshgrid(l_arr, m_arr, indexing="ij")
+    B_n[L**2 + M**2 > 1] = np.nan
+    return l_arr, m_arr, B_n
+
+
+def _msl_hpbw_from_norm(B_n, l_arr, m_arr, freq_MHz):
+    """Return (MSL_dB, HPBW_arcmin) from a normalised beam."""
+    L, M   = np.meshgrid(l_arr, m_arr, indexing="ij")
+    inside = (L**2 + M**2) <= 1.0
+    main   = inside & (B_n >= 0.5)
+    side   = inside & ~main
+    msl    = float(10 * np.log10(np.nanmax(B_n[side]) + 1e-20)) if side.any() else -999.0
+    dl     = l_arr[1] - l_arr[0]
+    omega  = float(np.sum(np.where(inside, B_n, 0.0)) * dl * dl)
+    hpbw   = np.degrees(2 * np.sqrt(max(omega, 1e-20) / np.pi)) * 60.0
+    return msl, hpbw
+
+
+def run_weighted_beamforming(new_configs):
+    """
+    Apply Hanning and Taylor (n=5, SLL=-20 dB) tapers to the cross config
+    (128×128 core) and compare with uniform weighting.
+
+    For each taper at 30 MHz:
+    – 2-D beam pattern
+    – 1-D cut (m = 0)
+    – MSL and HPBW metrics
+
+    Explains the trade-off between sidelobe suppression and main-lobe broadening.
+    """
+    print("\n" + "=" * 72)
+    print("  ADVANCED ANALYSIS 1: WEIGHTED BEAMFORMING")
+    print("=" * 72)
+
+    cfg_key = "cross_new_c128x128_out4x4_4arm"
+    if cfg_key not in new_configs:
+        cfg_key = next(k for k in new_configs if "cross" in k and "128" in k)
+    cfg   = new_configs[cfg_key]
+    pos   = cfg["pos_enu"]
+    meta  = cfg["meta"]
+    fc    = 30.0
+    n_g   = 256
+
+    tapers = [
+        ("Uniform",       "uniform", None),
+        ("Hanning taper", "hanning", None),
+        ("Taylor n=5 (−20 dB)", "taylor", 5),
+    ]
+    taper_colors = {"Uniform": "steelblue",
+                    "Hanning taper": "tomato",
+                    "Taylor n=5 (−20 dB)": "seagreen"}
+
+    fig, axes = plt.subplots(len(tapers), 2, figsize=(13, 5 * len(tapers)))
+    rows = []
+    for ri, (label, ttype, nbar) in enumerate(tapers):
+        w     = _radial_weights(pos, taper=ttype, n_side_bar=nbar)
+        l, m, B_n = _weighted_af(pos, w.astype(complex), fc, n_g)
+        msl, hpbw = _msl_hpbw_from_norm(B_n, l, m, fc)
+        rows.append(dict(taper=label, MSL_dB=msl, HPBW_arcmin=hpbw))
+        print(f"  {label:28s}  MSL={msl:+.1f} dB  HPBW={hpbw:.1f}′")
+
+        B_dB = 10 * np.log10(B_n.T + 1e-20)
+        im   = axes[ri, 0].pcolormesh(l, m, B_dB, vmin=-30, vmax=0,
+                                       cmap="inferno", shading="auto")
+        plt.colorbar(im, ax=axes[ri, 0], label="dB", fraction=0.046)
+        axes[ri, 0].set_title(f"{label}  —  2-D beam at 30 MHz", fontsize=9)
+        axes[ri, 0].set_xlabel("l"); axes[ri, 0].set_ylabel("m")
+        axes[ri, 0].set_aspect("equal")
+
+        mid  = n_g // 2
+        cut  = 10 * np.log10(B_n[:, mid] + 1e-20)
+        axes[ri, 1].plot(l, cut, color=taper_colors.get(label, "k"), lw=2)
+        axes[ri, 1].axhline(-3,  color="red",    ls="--", lw=0.9, label="−3 dB")
+        axes[ri, 1].axhline(-20, color="purple",  ls=":",  lw=1.0, label="−20 dB")
+        axes[ri, 1].set_ylim(-35, 2)
+        axes[ri, 1].set_title(f"1-D cut  HPBW={hpbw:.1f}′  MSL={msl:.1f} dB",
+                               fontsize=9)
+        axes[ri, 1].set_xlabel("l"); axes[ri, 1].set_ylabel("Power [dB]")
+        axes[ri, 1].legend(fontsize=8); axes[ri, 1].grid(True, alpha=0.3)
+
+    fig.suptitle(
+        f"Weighted Beamforming — {meta['label']}\n"
+        "Taper reduces sidelobes at the cost of a broader main lobe",
+        fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(ADV_PLOT, "adv1_weighted_beamforming.png"), dpi=120)
+    plt.close()
+
+    # 1-D overlay comparison
+    fig2, ax2 = plt.subplots(figsize=(10, 5))
+    for label, ttype, nbar in tapers:
+        w      = _radial_weights(pos, taper=ttype, n_side_bar=nbar)
+        l, m, B_n = _weighted_af(pos, w.astype(complex), fc, n_g)
+        mid    = n_g // 2
+        cut    = 10 * np.log10(B_n[:, mid] + 1e-20)
+        msl, hpbw = _msl_hpbw_from_norm(B_n, l, m, fc)
+        ax2.plot(l, cut, lw=2, color=taper_colors.get(label, "k"),
+                 label=f"{label}  (MSL={msl:.1f} dB, HPBW={hpbw:.1f}′)")
+    ax2.axhline(-3,  color="red", ls="--", lw=1, label="−3 dB")
+    ax2.axhline(-20, color="k",   ls=":",  lw=1, label="−20 dB")
+    ax2.set_ylim(-35, 2)
+    ax2.set_xlabel("l (East direction cosine)", fontsize=10)
+    ax2.set_ylabel("Normalised power [dB]", fontsize=10)
+    ax2.set_title("Taper comparison — 1-D beam cut at 30 MHz", fontsize=10)
+    ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(ADV_PLOT, "adv1_taper_comparison_1D.png"), dpi=120)
+    plt.close()
+
+    df_taper = pd.DataFrame(rows)
+    df_taper.to_csv(os.path.join(ADV_CSV, "adv1_taper_metrics.csv"), index=False)
+    print("  Saved adv1_weighted_beamforming.png, adv1_taper_comparison_1D.png")
+    print("  Saved adv1_taper_metrics.csv")
+    print("\n  Trade-off summary:")
+    print(f"  {'Taper':28s}  {'MSL [dB]':>10s}  {'HPBW [arcmin]':>15s}")
+    for r in rows:
+        print(f"  {r['taper']:28s}  {r['MSL_dB']:>+10.1f}  {r['HPBW_arcmin']:>15.1f}")
+    ref_hpbw = rows[0]["HPBW_arcmin"]
+    for r in rows[1:]:
+        brd = (r["HPBW_arcmin"] / ref_hpbw - 1) * 100
+        print(f"  → {r['taper']}: HPBW broadened by {brd:.1f}%  "
+              f"vs uniform (target ≤20%)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADVANCED ANALYSIS 2: ELEMENT PATTERN (DIPOLE)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_element_pattern_study(new_configs):
+    """
+    Multiply the normalised array factor by the short-dipole element radiation
+    pattern.  For a horizontal E-W dipole:
+      P(l, m) = 1 − l²       (null in E-W horizon, max at zenith)
+    For a horizontal N-S dipole:
+      P(l, m) = 1 − m²
+
+    Shows how the effective beam shrinks toward the horizon,
+    modifying the sensitivity at large zenith angles.
+    """
+    print("\n" + "=" * 72)
+    print("  ADVANCED ANALYSIS 2: ELEMENT PATTERN (DIPOLE)")
+    print("=" * 72)
+
+    cfg_key = "cross_new_c128x128_out4x4_4arm"
+    if cfg_key not in new_configs:
+        cfg_key = next(k for k in new_configs if "cross" in k and "128" in k)
+    cfg   = new_configs[cfg_key]
+    pos   = cfg["pos_enu"]
+    meta  = cfg["meta"]
+    fc    = 30.0
+    n_g   = 256
+
+    l_arr = np.linspace(-1, 1, n_g)
+    m_arr = np.linspace(-1, 1, n_g)
+    L, M  = np.meshgrid(l_arr, m_arr, indexing="ij")
+    inside = L**2 + M**2 <= 1.0
+
+    w    = np.ones(len(pos), dtype=complex)
+    _, _, B_iso = _weighted_af(pos, w, fc, n_g)
+
+    P_ew = np.where(inside, 1.0 - L**2, np.nan)   # E-W dipole
+    P_ns = np.where(inside, 1.0 - M**2, np.nan)   # N-S dipole
+
+    B_ew = B_iso * P_ew
+    B_ew = B_ew / (np.nanmax(B_ew) + 1e-30)
+    B_ns = B_iso * P_ns
+    B_ns = B_ns / (np.nanmax(B_ns) + 1e-30)
+
+    # Aeff modification at various zenith angles
+    zenith_angles = np.degrees(np.arcsin(np.sqrt(np.maximum(L**2 + M**2, 0))))
+    results = []
+    for za_thr in [0, 15, 30, 45, 60]:
+        mask_z = (zenith_angles <= za_thr) & inside
+        a_iso  = float(np.nanmean(B_iso[mask_z])) if mask_z.any() else 0.0
+        a_ew   = float(np.nanmean(B_ew[mask_z]))  if mask_z.any() else 0.0
+        results.append(dict(zenith_deg=za_thr,
+                            mean_B_iso=a_iso,
+                            mean_B_ew=a_ew,
+                            eff_area_ratio=a_ew / (a_iso + 1e-30)))
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    panels = [
+        (B_iso.T, "Isotropic (no element pattern)", "inferno"),
+        (P_ew.T,  "E-W dipole pattern P(l,m) = 1 − l²", "viridis"),
+        (B_ew.T,  "AF × E-W element pattern (normalised)", "inferno"),
+    ]
+    for ax, (data, title, cmap) in zip(axes, panels):
+        im = ax.pcolormesh(l_arr, m_arr, data, vmin=0, vmax=1,
+                           cmap=cmap, shading="auto")
+        plt.colorbar(im, ax=ax, fraction=0.046)
+        ax.set_title(title, fontsize=9)
+        ax.set_xlabel("l"); ax.set_ylabel("m")
+        ax.set_aspect("equal")
+
+    fig.suptitle(f"Element Pattern Effect — {meta['label']}\n"
+                 "Dipole creates a null toward the E-W horizon (l = ±1); "
+                 "beam shrinks at large zenith angles",
+                 fontsize=10, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(ADV_PLOT, "adv2_element_pattern.png"), dpi=120)
+    plt.close()
+
+    # Sensitivity penalty as function of zenith angle
+    fig2, ax2 = plt.subplots(figsize=(8, 5))
+    za_vals = [r["zenith_deg"] for r in results]
+    ratio   = [r["eff_area_ratio"] for r in results]
+    ax2.plot(za_vals, ratio, "o-", lw=2, ms=6, color="steelblue")
+    ax2.axhline(1.0, color="gray", ls="--", lw=1)
+    ax2.set_xlabel("Zenith angle [deg]", fontsize=10)
+    ax2.set_ylabel("Mean beam ratio  (with / without element pattern)", fontsize=10)
+    ax2.set_title("Effective sensitivity penalty from dipole element pattern",
+                  fontsize=10)
+    ax2.set_ylim(0, 1.2); ax2.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(ADV_PLOT, "adv2_zenith_sensitivity.png"), dpi=120)
+    plt.close()
+
+    pd.DataFrame(results).to_csv(os.path.join(ADV_CSV, "adv2_element_pattern.csv"),
+                                  index=False)
+    print("  Saved adv2_element_pattern.png, adv2_zenith_sensitivity.png")
+    print("  Saved adv2_element_pattern.csv")
+    print("\n  Effective-area penalty at horizon zenith angles:")
+    for r in results:
+        print(f"    z ≤ {r['zenith_deg']:2d}°  → mean(B×P) / mean(B) = "
+              f"{r['eff_area_ratio']:.3f}  "
+              f"({'no penalty' if r['eff_area_ratio'] > 0.95 else 'significant reduction'})")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADVANCED ANALYSIS 3: LUNAR ROTATION AND SOURCE TRACKING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_lunar_rotation_uv(new_configs):
+    """
+    Simulate UV-coverage accumulation over a full 14-day lunar sidereal day.
+    The Moon rotates once per ~27.3 days (sidereal period), but the far side
+    is visible to a fixed target for ~11 hours out of each ~24.8-hour synodic
+    day when the source is above the horizon.
+
+    We model this as: for each UTC hour in a 14-day window,
+    – compute the projected baseline in the (u, v) frame for each station pair
+      using the rotation of the ENU baseline vector under the Moon's rotation
+    – mark as 'visible' if the target elevation is above 0° (simplified model)
+
+    Source: 51 Peg b at (RA, Dec) = (344.4°, +20.5°).
+    """
+    print("\n" + "=" * 72)
+    print("  ADVANCED ANALYSIS 3: LUNAR ROTATION AND UV TRACKING")
+    print("=" * 72)
+
+    # Use the 128×128 cross config
+    cfg_key = "cross_new_c128x128_out4x4_4arm"
+    if cfg_key not in new_configs:
+        cfg_key = next(k for k in new_configs if "cross" in k and "128" in k)
+    cfg = new_configs[cfg_key]
+    meta = cfg["meta"]
+
+    # Station positions (core + outrigger centres)
+    stations = np.array([(0.0, 0.0)] +
+                        [(cx, cy) for cx, cy in meta["out_centres"]])
+
+    # Tsiolkovsky crater parameters
+    lat_rad = np.radians(PHI_DEG)   # -20.38°
+    lon_rad = np.radians(LAM_DEG)   # 128.97°
+
+    # 51 Peg b sky coordinates
+    src_ra_rad  = np.radians(344.4)
+    src_dec_rad = np.radians(20.5)
+
+    # Time grid: 14 days at 30-minute steps
+    dt_hr    = 0.5   # hours per step
+    n_days   = 14
+    n_steps  = int(n_days * 24 / dt_hr)
+    # Lunar sidereal rotation rate: 2π / (27.3 × 24) rad/hour
+    omega_moon = 2 * np.pi / (27.3 * 24.0)   # rad / hour
+
+    # Reference frequency: 30 MHz
+    freq_MHz = 30.0
+    lam      = C / (freq_MHz * 1e6)
+
+    uv_snapshot = {"u": [], "v": []}   # instant UV at t=0
+    uv_tracked  = {"u": [], "v": []}   # accumulated UV over 14 days
+    visibility_hrs = 0.0
+
+    for step in range(n_steps):
+        t_hr    = step * dt_hr
+        # Rotation angle of the lunar far-side array in inertial frame
+        psi     = omega_moon * t_hr   # cumulative rotation [rad]
+
+        # Hour angle of source at Tsiolkovsky crater
+        # (simplified: source RA sets an effective hour angle)
+        # HA = LST - RA.  LST = lon + omega_moon * t (in sidereal terms)
+        lst     = lon_rad + omega_moon * t_hr
+        ha      = lst - src_ra_rad
+
+        # Elevation of source (simplified flat-Moon approximation)
+        sin_el = (np.sin(lat_rad) * np.sin(src_dec_rad) +
+                  np.cos(lat_rad) * np.cos(src_dec_rad) * np.cos(ha))
+        if sin_el <= 0.0:
+            continue   # source below horizon
+
+        visibility_hrs += dt_hr
+        cos_el  = np.sqrt(max(1.0 - sin_el**2, 0.0))
+
+        # Rotation matrix (ENU basis rotated by psi around vertical axis)
+        Rmat = np.array([[np.cos(psi), -np.sin(psi)],
+                          [np.sin(psi),  np.cos(psi)]])
+
+        n_st = len(stations)
+        for i in range(n_st):
+            for j in range(i + 1, n_st):
+                dxy     = stations[i] - stations[j]   # ENU (East, North) diff [m]
+                dxy_rot = Rmat @ dxy                   # rotated baseline
+                # UV from projected baseline
+                u_val = dxy_rot[0] / lam * cos_el
+                v_val = dxy_rot[1] / lam
+                uv_tracked["u"] += [u_val / 1e3, -u_val / 1e3]
+                uv_tracked["v"] += [v_val / 1e3, -v_val / 1e3]
+
+        # Snapshot at t = 0
+        if step == 0:
+            for i in range(n_st):
+                for j in range(i + 1, n_st):
+                    dxy = stations[i] - stations[j]
+                    u_s = dxy[0] / lam * cos_el / 1e3
+                    v_s = dxy[1] / lam / 1e3
+                    uv_snapshot["u"] += [u_s, -u_s]
+                    uv_snapshot["v"] += [v_s, -v_s]
+
+    print(f"  Total source visibility over 14 days: {visibility_hrs:.1f} h "
+          f"({visibility_hrs/(14*24)*100:.1f}% of time)")
+
+    n_snap = len(uv_snapshot["u"]) // 2
+    n_track = len(uv_tracked["u"]) // 2
+    labels_uv = [
+        f"Snapshot UV (t = 0)\n{n_snap} baselines",
+        f"Tracked UV over 14 days\n({visibility_hrs:.0f} h visibility, {n_track:,} points)",
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    for ax, (ud, label) in zip(axes, [
+        (uv_snapshot, labels_uv[0]),
+        (uv_tracked,  labels_uv[1]),
+    ]):
+        ax.scatter(ud["u"], ud["v"], s=0.5, alpha=0.4, linewidths=0, c="steelblue")
+        ax.set_xlabel("u  [kλ]", fontsize=10); ax.set_ylabel("v  [kλ]", fontsize=10)
+        ax.set_title(label, fontsize=9)
+        ax.set_aspect("equal")
+        ax.axhline(0, color="gray", lw=0.4); ax.axvline(0, color="gray", lw=0.4)
+        ax.grid(True, alpha=0.2)
+
+    fig.suptitle(
+        f"UV Coverage: Snapshot vs 14-Day Tracked  —  {meta['label']}\n"
+        f"Target: 51 Peg b  (RA=344.4°, Dec=+20.5°)  |  30 MHz",
+        fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(ADV_PLOT, "adv3_lunar_rotation_uv.png"), dpi=120)
+    plt.close()
+    print("  Saved adv3_lunar_rotation_uv.png")
+    print(f"  Snapshot UV points: {len(uv_snapshot['u'])//2}")
+    print(f"  Tracked  UV points: {len(uv_tracked['u'])//2:,}  "
+          f"(×{len(uv_tracked['u'])//max(1,len(uv_snapshot['u'])):.0f} improvement)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADVANCED ANALYSIS 4: OPTIMAL OUTRIGGER SUB-ARRAY SIZE FOR CROSS CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_outrigger_size_study(targets):
+    """
+    Vary the outrigger sub-array side from N_o = 1 to 8 for the cross
+    configuration (128×128 core) at 5 km arm distance.
+    For each N_o compute:
+      – MSL, HPBW (beam quality)
+      – N_det (detection yield)
+      – mass proxy: N_elem × element_mass_kg
+    """
+    print("\n" + "=" * 72)
+    print("  ADVANCED ANALYSIS 4: OPTIMAL OUTRIGGER SIZE FOR CROSS")
+    print("=" * 72)
+
+    ELEM_MASS_KG = 1.5   # kg per dipole element (estimated)
+    core_n = 128
+    arm_dists_from_edge = [1250, 2500, 3750, 5000]
+    edge   = core_edge_m(core_n)
+    arm_dists_m = [edge + d for d in arm_dists_from_edge]
+
+    rows = []
+    for n_o in range(1, 9):
+        arm_dirs = [(0.0, 1.0), (0.0, -1.0), (1.0, 0.0), (-1.0, 0.0)]
+        parts    = [rect_array_enu(core_n, D_SPACE)]
+        centres  = []
+        for dx, dy in arm_dirs:
+            for dc in arm_dists_m:
+                cx, cy = dx * dc, dy * dc
+                centres.append((cx, cy))
+                parts.append(rect_array_enu(n_o, D_SPACE, cx, cy))
+        pos   = np.vstack(parts)
+        N_tot = len(pos)
+        B_max = max_baseline_m(centres, core_n)
+
+        meta = dict(core_n=core_n, out_n=n_o, out_centres=centres,
+                    N_total=N_tot, B_max_m=B_max)
+
+        l, m, AF_dB, B_n = compute_af(pos, meta, 30.0, 256)
+        msl, hpbw = _msl_hpbw_from_norm(B_n, l, m, 30.0)
+
+        # Detection yield
+        n_feas = 0
+        for bl, (f_lo, f_hi), fc in zip(BAND_LABELS, SUBBANDS, BAND_CTR):
+            bw = f_hi - f_lo
+            band_tgts = targets[(targets["frequency_MHz"] >= f_lo) &
+                                 (targets["frequency_MHz"] <  f_hi)]
+            for _, trow in band_tgts.iterrows():
+                t_h = required_t_hours(trow["flux_mJy"], N_tot, fc, bw, B_max)
+                if t_h < 100:
+                    n_feas += 1
+                    break   # count target once
+
+        mass_kg  = N_tot * ELEM_MASS_KG
+        rows.append(dict(N_o=n_o, N_elements=N_tot,
+                         MSL_dB=msl, HPBW_arcmin=hpbw,
+                         n_det=n_feas, mass_kg=mass_kg))
+        print(f"  N_o={n_o}: N={N_tot:6d}  MSL={msl:+.1f} dB  "
+              f"HPBW={hpbw:.1f}′  n_det={n_feas}  mass={mass_kg:.0f} kg")
+
+    df_sz = pd.DataFrame(rows)
+    df_sz.to_csv(os.path.join(ADV_CSV, "adv4_outrigger_size.csv"), index=False)
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    for ax, col, ylabel, invert in [
+        (axes[0, 0], "MSL_dB",        "MSL [dB] (more negative = better)", True),
+        (axes[0, 1], "HPBW_arcmin",   "HPBW [arcmin]  (smaller = better)", True),
+        (axes[1, 0], "n_det",         "Feasible detections (<100 h)", False),
+        (axes[1, 1], "mass_kg",       "Total mass proxy [kg]", True),
+    ]:
+        ax.plot(df_sz["N_o"], df_sz[col], "o-", lw=2, ms=7, color="steelblue")
+        for i, row in df_sz.iterrows():
+            ax.annotate(f"N_o={row['N_o']}", (row["N_o"], row[col]),
+                        fontsize=7, xytext=(3, 3), textcoords="offset points")
+        ax.set_xlabel("Outrigger sub-array side N_o", fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_title(ylabel.split("[")[0].strip(), fontsize=10)
+        ax.grid(True, alpha=0.3)
+        if invert and col != "HPBW_arcmin":
+            ax.invert_yaxis()
+
+    fig.suptitle(
+        "Outrigger Size Optimization — 128×128 Cross Config\n"
+        "(4 arms × 4 outriggers; arm distances 1.25/2.5/3.75/5 km from edge)",
+        fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(ADV_PLOT, "adv4_outrigger_size_study.png"), dpi=120)
+    plt.close()
+    print("  Saved adv4_outrigger_size_study.png, adv4_outrigger_size.csv")
+
+    best = df_sz.loc[df_sz["n_det"].idxmax()]
+    print(f"\n  Best N_o for detection yield: N_o = {int(best['N_o'])}  "
+          f"(n_det={int(best['n_det'])}, mass≈{best['mass_kg']:.0f} kg)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADVANCED ANALYSIS 5: CALIBRATION ARCHITECTURE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_calibration_architecture():
+    """
+    Analytical assessment of calibration from the lunar far side.
+    Compute: sky temperature contribution of bright calibrators,
+    expected SNR per calibration cycle, coherence time estimate.
+    """
+    print("\n" + "=" * 72)
+    print("  ADVANCED ANALYSIS 5: CALIBRATION ARCHITECTURE")
+    print("=" * 72)
+
+    # Calibrator flux densities (approximate, at 10 MHz, Jy)
+    calibrators = {
+        "Cas A":  6e6,
+        "Cyg A":  1.5e6,
+        "Vir A":  6e5,
+        "Tau A":  2.5e5,
+        "Her A":  1.1e5,
+    }
+    # Approximate spectral index for scaling to other frequencies
+    alpha = -0.7   # S ∝ ν^α
+
+    # Array parameters for 128×128 + 4×4 outriggers (5 km)
+    N        = 128**2 + 4 * 4**2   # total elements
+    B_max_m  = 5327.0               # m (from new cross config)
+    fc_cal   = 10.0                 # calibration at 10 MHz
+    bw_cal   = 1.0                  # 1 MHz calibration bandwidth
+    t_cal_s  = 60.0                 # 60-second calibration cycle
+
+    # Thermal noise at calibration frequency
+    st_cal  = sigma_thermal_Jy(N, fc_cal, bw_cal, t_cal_s / 3600.0)
+
+    print(f"\n  Array: {N} elements, B_max = {B_max_m/1e3:.2f} km")
+    print(f"  Calibration: {fc_cal} MHz, BW = {bw_cal} MHz, t = {t_cal_s:.0f} s")
+    print(f"  Thermal noise: {st_cal*1e-3:.3f} kJy  ({st_cal:.3e} Jy)")
+    snr_hdr = f"SNR in {t_cal_s:.0f}s"
+    print(f"\n  {'Source':8s}  {'S(10MHz) [kJy]':>16s}  {snr_hdr:>18s}  "
+          f"{'Usable?':>8s}")
+    print("  " + "-" * 60)
+
+    rows = []
+    for src, S_10 in calibrators.items():
+        # Scale to calibration frequency (already at 10 MHz)
+        S_fc  = S_10 * (fc_cal / 10.0) ** alpha
+        snr   = S_fc / (NSIGMA * st_cal)
+        usable = "YES" if snr > 10 else "marginal" if snr > 3 else "NO"
+        print(f"  {src:8s}  {S_fc/1e3:>16.0f}  {snr:>18.1f}  {usable:>8s}")
+        rows.append(dict(source=src, flux_Jy=S_fc, SNR=snr, usable=usable))
+
+    # Ionospheric / exospheric coherence time (lunar plasma)
+    # Below ~1 MHz, dispersion measure ~10⁻⁴ pc cm⁻³ (lunar exosphere estimate)
+    DM_est  = 1e-4     # pc cm⁻³
+    for nu_MHz in [0.5, 1.0, 5.0, 10.0, 30.0]:
+        # Dispersion delay at ν vs reference ν_ref = 100 MHz
+        nu_ref  = 100.0
+        dt_disp = 4150.0 * DM_est * (1/nu_MHz**2 - 1/nu_ref**2)   # seconds
+        print(f"  Plasma dispersion at {nu_MHz:5.1f} MHz:  Δt ≈ {dt_disp:.2f} s")
+
+    pd.DataFrame(rows).to_csv(os.path.join(ADV_CSV, "adv5_calibrators.csv"),
+                               index=False)
+    print("\n  Saved adv5_calibrators.csv")
+    print("\n  Key findings:")
+    print("  • Cas A and Cyg A provide >1000× SNR → excellent gain calibrators")
+    print("  • Phase calibration requires short-baseline correlations (coherent on core)")
+    print("  • Calibration cycle ≤ 60 s prevents ionospheric/plasma phase drift")
+    print("  • Below 1 MHz, dispersion delays require per-channel phase correction")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADVANCED ANALYSIS 6: PLASMA / EXOSPHERE EFFECTS BELOW 1 MHz
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_plasma_effects():
+    """
+    Model dispersive phase delay and phase noise from the lunar exosphere.
+    The Moon has a tenuous plasma with electron density n_e ~ 10³–10⁴ cm⁻³
+    near the surface (daytime).  This introduces a dispersive group delay
+    τ_group = (e²/8π²m_e ε₀) × DM / ν²  ≈  4150 × DM / ν²  [s, pc cm⁻³, MHz]
+    and a phase noise bandwidth ~ ν_p (plasma frequency) = 8.98 √n_e  [Hz].
+    """
+    print("\n" + "=" * 72)
+    print("  ADVANCED ANALYSIS 6: PLASMA EFFECTS BELOW 1 MHz")
+    print("=" * 72)
+
+    # Lunar exosphere electron density estimates
+    n_e_day   = 1e3    # cm⁻³  (daytime, near surface)
+    n_e_night = 1e1    # cm⁻³  (nighttime, much lower)
+    DM_day    = 3e-5   # pc cm⁻³  (rough estimate for path through exosphere)
+    DM_night  = 3e-7
+
+    nu_arr = np.logspace(-1, 2, 300)   # 0.1 to 100 MHz
+
+    # Plasma cutoff frequency
+    nu_p_day   = 8.98e-3 * np.sqrt(n_e_day)    # MHz
+    nu_p_night = 8.98e-3 * np.sqrt(n_e_night)
+
+    print(f"\n  Daytime  plasma cutoff: {nu_p_day:.3f} MHz  (n_e={n_e_day:.0f} cm⁻³)")
+    print(f"  Nighttime plasma cutoff: {nu_p_night:.4f} MHz  (n_e={n_e_night:.0f} cm⁻³)")
+
+    # Dispersion delay relative to 1 GHz reference
+    dt_day   = 4150.0 * DM_day   * (1.0/nu_arr**2 - 1.0/1000.0**2)
+    dt_night = 4150.0 * DM_night * (1.0/nu_arr**2 - 1.0/1000.0**2)
+
+    # Phase noise: thermal noise + dispersive smearing (simplified)
+    phase_noise_day   = np.degrees(2 * np.pi * nu_arr * 1e6 * dt_day)
+    phase_noise_night = np.degrees(2 * np.pi * nu_arr * 1e6 * dt_night)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax1.loglog(nu_arr, np.abs(dt_day),   lw=2, label=f"Daytime  (n_e={n_e_day:.0f} cm⁻³)")
+    ax1.loglog(nu_arr, np.abs(dt_night), lw=2, ls="--", label=f"Nighttime (n_e={n_e_night:.0f} cm⁻³)")
+    ax1.axvline(1.0,  color="red", ls=":", lw=1.5, label="1 MHz boundary")
+    ax1.axvline(nu_p_day, color="tomato", ls="--", lw=1, alpha=0.7,
+                label=f"Day plasma cutoff {nu_p_day:.2f} MHz")
+    ax1.set_xlabel("Frequency [MHz]", fontsize=10)
+    ax1.set_ylabel("Dispersive group delay [s]", fontsize=10)
+    ax1.set_title("Lunar exosphere group delay", fontsize=10)
+    ax1.legend(fontsize=8); ax1.grid(True, which="both", alpha=0.3)
+
+    ax2.loglog(nu_arr, np.abs(phase_noise_day),   lw=2, label="Daytime")
+    ax2.loglog(nu_arr, np.abs(phase_noise_night), lw=2, ls="--", label="Nighttime")
+    ax2.axhline(10, color="gray", ls=":", lw=1.2, label="10° phase noise threshold")
+    ax2.axvline(1.0,  color="red", ls=":", lw=1.5)
+    ax2.set_xlabel("Frequency [MHz]", fontsize=10)
+    ax2.set_ylabel("Phase noise [degrees]", fontsize=10)
+    ax2.set_title("Phase noise from dispersive delay", fontsize=10)
+    ax2.legend(fontsize=8); ax2.grid(True, which="both", alpha=0.3)
+
+    fig.suptitle(
+        "Lunar Exosphere Plasma Effects\n"
+        "Significant below ~1 MHz; nighttime operations reduce dispersion by ×100",
+        fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(ADV_PLOT, "adv6_plasma_effects.png"), dpi=120)
+    plt.close()
+    print("  Saved adv6_plasma_effects.png")
+
+    # Usable frequency range
+    for nu_thr in [0.5, 1.0, 5.0]:
+        idx = np.argmin(np.abs(nu_arr - nu_thr))
+        print(f"  At {nu_thr} MHz  | day delay={dt_day[idx]:.2f}s "
+              f"phase={phase_noise_day[idx]:.1f}°  |  "
+              f"night delay={dt_night[idx]:.4f}s phase={phase_noise_night[idx]:.2f}°")
+    print("\n  Recommendation: operate below 1 MHz only during lunar night,")
+    print("  with per-channel DM correction using known pulsar timing solutions.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADVANCED ANALYSIS 7: COMPARISON WITH FARSIDE / DAPPER / DSL
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_farside_comparison(targets):
+    """
+    Benchmark ALO against FARSIDE, DAPPER, and DSL using known/published
+    array parameters.  Compute sensitivity, confusion, and detection yield
+    for each concept using the same target catalogue.
+    """
+    print("\n" + "=" * 72)
+    print("  ADVANCED ANALYSIS 7: COMPARISON WITH FARSIDE / DAPPER / DSL")
+    print("=" * 72)
+
+    # Published / estimated parameters for each concept
+    # (N_elem, B_max_m, freq_range_MHz, deployment_site)
+    concepts = {
+        "ALO (128×128 + cross, 5km)": {
+            "N": 128**2 + 4*4*(4**2),   # 128^2 core + 4 arms × 4 × 4×4
+            "B_max_m": 5327.0,
+            "site": "Tsiolkovsky crater, lunar far side (surface)",
+            "freq_MHz": (1, 40),
+        },
+        "FARSIDE (proposed)": {
+            "N": 128,       # 128 antennas in lunar orbit + surface nodes
+            "B_max_m": 10e3,
+            "site": "Lunar farside surface, Aitken Basin",
+            "freq_MHz": (0.1, 40),
+        },
+        "DAPPER (proposed)": {
+            "N": 1,         # single spacecraft in lunar orbit (no interferometry)
+            "B_max_m": 1e3,
+            "site": "Lunar orbit (cislunar)",
+            "freq_MHz": (0.1, 40),
+        },
+        "DSL (proposed, China)": {
+            "N": 8,         # 1 mother + 5-7 daughter spacecraft (linear array)
+            "B_max_m": 100e3,
+            "site": "Lunar orbit, mother-daughter formation",
+            "freq_MHz": (1, 30),
+        },
+    }
+
+    print(f"\n  {'Concept':35s}  {'N_elem':>7s}  {'B_max km':>9s}  "
+          f"{'θ_HPBW@10MHz (arcmin)':>24s}  {'n_det(<100h)':>13s}")
+    print("  " + "-" * 100)
+
+    rows = []
+    for name, params in concepts.items():
+        N     = params["N"]
+        B_max = params["B_max_m"]
+        # HPBW at 10 MHz using λ/B_max
+        wl_10    = C / (10e6)
+        hpbw_rad = wl_10 / B_max if B_max > 0 else np.pi
+        hpbw_arcmin = np.degrees(hpbw_rad) * 60.0
+
+        n_feas = 0
+        if N > 1:
+            for bl, (f_lo, f_hi), fc in zip(BAND_LABELS, SUBBANDS, BAND_CTR):
+                bw = f_hi - f_lo
+                p_lo, p_hi = params["freq_MHz"]
+                if fc < p_lo or fc > p_hi:
+                    continue
+                band_tgts = targets[(targets["frequency_MHz"] >= f_lo) &
+                                     (targets["frequency_MHz"] <  f_hi)]
+                counted = set()
+                for _, trow in band_tgts.iterrows():
+                    if trow["Name"] in counted:
+                        continue
+                    t_h = required_t_hours(trow["flux_mJy"], N, fc, bw, B_max)
+                    if t_h < 100:
+                        n_feas += 1
+                        counted.add(trow["Name"])
+
+        print(f"  {name:35s}  {N:>7d}  {B_max/1e3:>9.1f}  "
+              f"{hpbw_arcmin:>24.1f}  {n_feas:>13d}")
+        rows.append(dict(concept=name, N=N, B_max_km=B_max/1e3,
+                         HPBW_arcmin_at_10MHz=hpbw_arcmin,
+                         n_feasible_det=n_feas,
+                         site=params["site"],
+                         freq_range=f"{params['freq_MHz'][0]}–{params['freq_MHz'][1]} MHz"))
+
+    df_comp = pd.DataFrame(rows)
+    df_comp.to_csv(os.path.join(ADV_CSV, "adv7_farside_comparison.csv"), index=False)
+
+    # Bar chart
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    cols_plot = ["N", "B_max_km", "n_feasible_det"]
+    labels_p  = ["Number of elements N",
+                 "Max baseline B_max [km]",
+                 "Feasible detections (<100h)"]
+    concept_labels = [r["concept"].split("(")[0].strip() for r in rows]
+    colors = ["#2196F3", "#4CAF50", "#FF9800", "#E91E63"]
+    for ax, col, ylabel in zip(axes, cols_plot, labels_p):
+        vals = df_comp[col].values
+        ax.bar(range(len(rows)), vals, color=colors[:len(rows)],
+               edgecolor="white", lw=0.5)
+        ax.set_xticks(range(len(rows)))
+        ax.set_xticklabels(concept_labels, rotation=20, ha="right", fontsize=8)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.set_title(ylabel.split("[")[0].strip(), fontsize=9)
+        if col == "N":
+            ax.set_yscale("log")
+        ax.grid(axis="y", alpha=0.3)
+        for i, v in enumerate(vals):
+            ax.text(i, v * 1.02 if v > 0 else 1, f"{v:.0f}",
+                    ha="center", fontsize=7)
+
+    fig.suptitle(
+        "Lunar Far-Side Array Concept Comparison\n"
+        "ALO vs FARSIDE vs DAPPER vs DSL  (same 373-target catalogue)",
+        fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(ADV_PLOT, "adv7_farside_comparison.png"), dpi=120)
+    plt.close()
+    print("  Saved adv7_farside_comparison.png, adv7_farside_comparison.csv")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADVANCED ANALYSIS 8: DEPLOYMENT FEASIBILITY
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_deployment_study():
+    """
+    Engineering trade study for the optimal configuration:
+    128×128 core + cross 4×4×4 outriggers at 5 km arm distances.
+
+    Estimates: mass, power, thermal environment, deployment strategy.
+    """
+    print("\n" + "=" * 72)
+    print("  ADVANCED ANALYSIS 8: DEPLOYMENT FEASIBILITY")
+    print("=" * 72)
+
+    # Element parameters
+    elem_mass_kg  = 1.5      # kg per folded dipole
+    elem_power_W  = 0.3      # W per active receive element (ADC + LNA)
+    wire_mass_kg_per_m = 0.05  # kg/m for signal cable
+
+    # Configuration: 128×128 core + 4 arms × 4 × 4×4 outriggers
+    N_core  = 128**2
+    N_out   = 4 * 4 * 4**2   # 4 arms × 4 sub-arrays × 16 elem
+    N_total = N_core + N_out
+
+    # Mass budget
+    mass_elems_kg  = N_total * elem_mass_kg
+    core_footprint = (128 - 1) * D_SPACE               # 654 m core side
+    # Cable mass: Manhattan distance approximation for core wiring
+    cable_core_m   = N_core * core_footprint / 2        # rough estimate
+    # Outrigger cable: 4 arms × 4 positions, arm distances from edge
+    arm_dists      = [1329 + d for d in [0, 1250, 2500, 3750]]  # m from centre
+    cable_out_m    = 4 * sum(arm_dists)
+    mass_cable_kg  = (cable_core_m + cable_out_m) * wire_mass_kg_per_m
+    # Electronics (LNA + digitiser + hub): ~2 kg per sub-array
+    mass_elec_kg   = (1 + 4 * 4) * 2.0   # core hub + 16 sub-array hubs
+    mass_total_kg  = mass_elems_kg + mass_cable_kg + mass_elec_kg
+
+    # Power budget
+    power_rx_W     = N_total * elem_power_W
+    power_proc_W   = 500.0   # data processing + correlation
+    power_comms_W  = 200.0   # RF link to Earth relay / orbiter
+    power_thermal_W = 100.0  # heater during lunar night
+    power_total_W  = power_rx_W + power_proc_W + power_comms_W + power_thermal_W
+
+    # Solar power availability at Moon (1 AU): solar constant 1361 W/m²
+    # Lunar day ≈ 14 Earth days → solar energy available half the time
+    solar_efficiency = 0.22   # panel efficiency
+    panel_area_m2    = power_total_W / (1361 * solar_efficiency * 0.5)
+
+    # RTG alternative: 1 MMRTG ≈ 110 W
+    n_rtg  = int(np.ceil(power_total_W / 110.0))
+
+    # Thermal: lunar surface temperature swings -173°C to +127°C
+    T_day_K   = 400   # K daytime
+    T_night_K = 100   # K nighttime
+    delta_T   = T_day_K - T_night_K
+
+    print(f"\n  Configuration: {N_total} elements "
+          f"({N_core} core + {N_out} outriggers)")
+    print(f"  Core footprint: {core_footprint:.0f} m × {core_footprint:.0f} m")
+    print(f"\n  MASS BUDGET:")
+    print(f"    Element antennas:  {mass_elems_kg:8.0f} kg")
+    print(f"    Signal cables:     {mass_cable_kg:8.0f} kg")
+    print(f"    Electronics:       {mass_elec_kg:8.0f} kg")
+    print(f"    TOTAL:             {mass_total_kg:8.0f} kg")
+    print(f"\n  POWER BUDGET:")
+    print(f"    Receive elements:  {power_rx_W:8.0f} W")
+    print(f"    Processing:        {power_proc_W:8.0f} W")
+    print(f"    Communications:    {power_comms_W:8.0f} W")
+    print(f"    Thermal mgmt:      {power_thermal_W:8.0f} W")
+    print(f"    TOTAL:             {power_total_W:8.0f} W")
+    print(f"\n  POWER SOURCES:")
+    print(f"    Solar panels needed: {panel_area_m2:.1f} m² @ η={solar_efficiency}")
+    print(f"    RTG alternative:     {n_rtg} × MMRTG (each ≈110 W EOL)")
+    print(f"\n  THERMAL:")
+    print(f"    Day/night swing:   {T_day_K - 273:.0f}°C to {T_night_K - 273:.0f}°C "
+          f"(ΔT = {delta_T} K)")
+    print(f"    Mitigation: multi-layer insulation (MLI) + heaters on electronics")
+    print(f"\n  DEPLOYMENT NOTES:")
+    print(f"    Core array: 128×128 = {N_core} elements over {core_footprint:.0f}m × "
+          f"{core_footprint:.0f}m")
+    print(f"    → requires robotic or automated deployment over ~650m footprint")
+    print(f"    Outrigger arms: 4 directions, last station at "
+          f"~{arm_dists[-1]/1e3:.1f} km from core edge")
+    print(f"    → cable/power routed along deployed tether or deployed by rover")
+    print(f"\n  FEASIBILITY ASSESSMENT:")
+    feasible = mass_total_kg < 5000 and power_total_W < 3000
+    print(f"    Mass < 5000 kg: {'YES' if mass_total_kg < 5000 else 'NO'} "
+          f"({mass_total_kg:.0f} kg)")
+    print(f"    Power < 3 kW:   {'YES' if power_total_W < 3000 else 'NO'} "
+          f"({power_total_W:.0f} W)")
+    print(f"    Overall feasibility: "
+          f"{'TECHNICALLY FEASIBLE' if feasible else 'CHALLENGING — needs phased deployment'}")
+
+    # Save summary
+    rows = [
+        dict(category="Element antennas", value_kg=mass_elems_kg),
+        dict(category="Signal cables",    value_kg=mass_cable_kg),
+        dict(category="Electronics",      value_kg=mass_elec_kg),
+        dict(category="TOTAL MASS",       value_kg=mass_total_kg),
+    ]
+    pd.DataFrame(rows).to_csv(os.path.join(ADV_CSV, "adv8_deployment.csv"),
+                               index=False)
+
+    # Mass/power pie charts
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    mass_labels = ["Elements", "Cables", "Electronics"]
+    mass_vals   = [mass_elems_kg, mass_cable_kg, mass_elec_kg]
+    ax1.pie(mass_vals, labels=mass_labels, autopct="%1.1f%%",
+            colors=["#2196F3", "#4CAF50", "#FF9800"])
+    ax1.set_title(f"Mass Budget (Total = {mass_total_kg:.0f} kg)", fontsize=10)
+
+    power_labels = ["Receive elements", "Processing", "Communications", "Thermal"]
+    power_vals   = [power_rx_W, power_proc_W, power_comms_W, power_thermal_W]
+    ax2.pie(power_vals, labels=power_labels, autopct="%1.1f%%",
+            colors=["#2196F3", "#4CAF50", "#FF9800", "#E91E63"])
+    ax2.set_title(f"Power Budget (Total = {power_total_W:.0f} W)", fontsize=10)
+
+    fig.suptitle(
+        f"ALO Deployment Feasibility — 128×128 Core + Cross 4×4 @ 5 km\n"
+        f"({N_total} total elements, {core_footprint:.0f}m core footprint)",
+        fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(ADV_PLOT, "adv8_deployment.png"), dpi=120)
+    plt.close()
+    print("  Saved adv8_deployment.png, adv8_deployment.csv")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
     print("ALO Geometry Trade-off Study — Start")
     print(f"Geometries: {GEOMETRIES}")
-    print(f"Core sizes: 32×32, 128×128  |  Distances: {DISTANCES} km\n")
+    print(f"Core sizes: 32×32, 128×128  |  Distances: {DISTANCES} km")
+    print(f"A_eff per element: {A_EFF_ELE} m²  (fixed physical constant)\n")
 
     # Step 1
     configs = build_all_configs()
@@ -2351,6 +3685,19 @@ def main():
 
     # Extended source analysis
     run_extended_source_analysis()
+
+    # ── NEW CONFIGURATIONS (a–f) ────────────────────────────────────────────
+    new_cfgs, af_new, df_sens_new, df_sum_new = run_new_configs_analysis(targets)
+
+    # ── ADVANCED ANALYSES ───────────────────────────────────────────────────
+    run_weighted_beamforming(new_cfgs)
+    run_element_pattern_study(new_cfgs)
+    run_lunar_rotation_uv(new_cfgs)
+    run_outrigger_size_study(targets)
+    run_calibration_architecture()
+    run_plasma_effects()
+    run_farside_comparison(targets)
+    run_deployment_study()
 
     print(f"\nAll outputs saved to:\n  {GT_PLOT}\n  {GT_CSV}")
     print("ALO Geometry Trade-off Study — Done")

@@ -479,6 +479,11 @@ def feasibility(t_h):
     return "impossible"
 
 
+def core_edge_m(core_n):
+    """Distance from core center to the farthest element at the edge [m]."""
+    return (core_n - 1) / 2.0 * D_SPACE
+
+
 def max_baseline(core_n, dk):
     """Approximate maximum baseline [m]."""
     return 2 * dk * 1e3 + core_n * D_SPACE
