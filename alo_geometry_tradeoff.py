@@ -86,15 +86,22 @@ def layout_ring(core_n, out_n, dist_km):
 def layout_y_shape(core_n, out_n, dist_km):
     """
     Y-shape: 3 arms at 90° (N), 210° (SW), 330° (SE).
-    4 outriggers: N-arm tip (d), N-arm midpoint (d/2), SW tip (d), SE tip (d).
-    Maximum distance from core centre = dist_km.
+    4 outriggers: N tip (d), SW tip (d), SE tip (d), SW mid (d/2).
+
+    The 4th station is on the SW arm, NOT the N arm.  Placing it on the N arm
+    (as was done previously) left SW and SE as exact left-right mirrors, giving
+    the array an unintended N-S mirror symmetry and making |AF|² look identical
+    to the ring pattern.  Moving it to SW means SW has two stations while SE
+    has one, which breaks all mirror symmetry.  Only the fundamental centrosymmetry
+    |AF(l,m)|² = |AF(-l,-m)|² remains — a mathematical property that holds for
+    every array with uniform real weights and cannot be removed.
     """
     d       = dist_km * 1e3
     centres = [
-        ( d    * np.cos(np.radians( 90)),  d    * np.sin(np.radians( 90))),  # N tip
-        ( d/2  * np.cos(np.radians( 90)),  d/2  * np.sin(np.radians( 90))),  # N mid
+        ( d    * np.cos(np.radians( 90)),  d    * np.sin(np.radians( 90))),  # N  tip
         ( d    * np.cos(np.radians(210)),  d    * np.sin(np.radians(210))),  # SW tip
         ( d    * np.cos(np.radians(330)),  d    * np.sin(np.radians(330))),  # SE tip
+        ( d/2  * np.cos(np.radians(210)),  d/2  * np.sin(np.radians(210))),  # SW mid
     ]
     parts = [rect_array_enu(core_n, D_SPACE)]
     for cx, cy in centres:
@@ -735,6 +742,135 @@ def comparison_plots(df_sum):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SYMMETRY DIAGNOSTIC PLOT
+# Shows quantitatively that different geometries have different symmetry levels
+# ══════════════════════════════════════════════════════════════════════════════
+def symmetry_diagnostic_plot(configs, af_store):
+    """
+    For each of the 16 configurations, compute three symmetry error metrics
+    on the normalised power beam at 30 MHz:
+
+      err_180 = max |B(l,m) − B(−l,−m)|   ← centrosymmetry  (must be ~0)
+      err_LR  = max |B(l,m) − B(−l, m)|   ← left-right mirror
+      err_UD  = max |B(l,m) − B( l,−m)|   ← up-down mirror
+
+    For a ring:  all three ≈ 0  (full D4 symmetry)
+    For a line:  all three ≈ 0  (mirror-symmetric E-W array)
+    For fixed Y: err_180 ≈ 0, err_LR and err_UD > 0  (only centrosymmetry)
+    For random:  err_180 ≈ 0, err_LR and err_UD > 0  (only centrosymmetry)
+
+    Also shows a side-by-side |B| vs mirror(|B|) difference image for the
+    most asymmetric configuration to make the break in symmetry visible.
+    """
+    print("\n── Symmetry diagnostic ──")
+    ref_bl = "20-40"
+    rows   = []
+
+    for name, cfg in configs.items():
+        _, _, _, B_norm = af_store[name][ref_bl]
+        err_180 = float(np.nanmax(np.abs(B_norm - B_norm[::-1, ::-1])))
+        err_LR  = float(np.nanmax(np.abs(B_norm - B_norm[:,   ::-1])))
+        err_UD  = float(np.nanmax(np.abs(B_norm - B_norm[::-1,   :])))
+        rows.append(dict(config=name, geom=cfg["meta"]["geom"],
+                         core_n=cfg["meta"]["core_n"],
+                         dist_km=cfg["meta"]["dist_km"],
+                         err_180=err_180, err_LR=err_LR, err_UD=err_UD))
+
+    df_sym = pd.DataFrame(rows)
+    df_sym.to_csv(os.path.join(GT_CSV, "symmetry_errors.csv"), index=False)
+
+    # ── Bar chart: LR and UD errors per config ────────────────────────────────
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    x   = np.arange(len(df_sym))
+    w   = 0.4
+    colors = [GEOM_COLOR[g] for g in df_sym["geom"]]
+
+    for ax, col, title in zip(axes,
+            ["err_LR",  "err_UD"],
+            ["Left-Right Mirror Error\n(max|B(l,m)−B(−l,m)|)",
+             "Up-Down Mirror Error\n(max|B(l,m)−B(l,−m)|)"]):
+        ax.bar(x - w/2, df_sym[col], w, color=colors, edgecolor="white", lw=0.4)
+        ax.axhline(0.01, color="grey", ls="--", lw=0.9,
+                   label="1% threshold — visually perceptible asymmetry")
+        ax.set_xticks(x)
+        ax.set_xticklabels(df_sym["config"], rotation=50, ha="right", fontsize=6.5)
+        ax.set_ylabel("Max absolute error in B_norm", fontsize=10)
+        ax.set_title(title + "\n(0 = perfectly symmetric, >0 = asymmetric)", fontsize=10)
+        ax.legend(fontsize=8); ax.grid(True, axis="y", alpha=0.3)
+
+    # geometry legend
+    handles = [mpatches.Patch(color=GEOM_COLOR[g], label=GEOM_LABEL[g])
+               for g in GEOMETRIES]
+    axes[0].legend(handles=handles + [
+        plt.Line2D([0],[0], color="grey", ls="--", lw=0.9,
+                   label="1% threshold")], fontsize=8)
+
+    fig.suptitle("Beam Pattern Symmetry Analysis — All 16 Configurations\n"
+                 "Centrosymmetry (180° rotation) is always ≈0 by physics;\n"
+                 "Mirror symmetry breaks only for Y-shape and Random.",
+                 fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    fig.savefig(os.path.join(GT_PLOT, "symmetry_errors.png"), dpi=150)
+    plt.close(fig)
+    print("  Saved symmetry_errors.png")
+
+    # ── Difference images: B(l,m) − B(−l,m) for one representative config ──
+    # Show ring (should be 0), Y-shape, random (should be non-zero)
+    fig, axes = plt.subplots(3, 4, figsize=(16, 12))
+    check_cfgs = [
+        ("ring_core128x128_5.0km",    "Ring 128×128 + 5 km\n(expected: ~0 difference)"),
+        ("y_shape_core128x128_5.0km", "Y-shape 128×128 + 5 km\n(expected: asymmetric difference)"),
+        ("random_core128x128_5.0km",  "Random 128×128 + 5 km\n(expected: asymmetric difference)"),
+        ("line_core128x128_5.0km",    "Line 128×128 + 5 km\n(expected: ~0 difference)"),
+    ]
+    row_labels = ["Beam B(l,m)", "Mirror B(−l,m)", "Difference B − mirror"]
+
+    for ci, (cname, ctitle) in enumerate(check_cfgs):
+        l_arr, m_arr, _, B_norm = af_store[cname][ref_bl]
+        B_mirror = B_norm[:, ::-1]
+        diff     = B_norm - B_mirror
+        vmax_b   = 1.0
+        vmax_d   = max(0.02, np.nanpercentile(np.abs(diff), 99))
+
+        im0 = axes[0, ci].pcolormesh(l_arr, m_arr, B_norm,
+                                      vmin=0, vmax=vmax_b, cmap="inferno",
+                                      shading="auto")
+        axes[0, ci].set_title(ctitle, fontsize=8)
+        plt.colorbar(im0, ax=axes[0, ci], fraction=0.046)
+
+        im1 = axes[1, ci].pcolormesh(l_arr, m_arr, B_mirror,
+                                      vmin=0, vmax=vmax_b, cmap="inferno",
+                                      shading="auto")
+        plt.colorbar(im1, ax=axes[1, ci], fraction=0.046)
+
+        im2 = axes[2, ci].pcolormesh(l_arr, m_arr, diff,
+                                      vmin=-vmax_d, vmax=vmax_d,
+                                      cmap="RdBu_r", shading="auto")
+        plt.colorbar(im2, ax=axes[2, ci], fraction=0.046)
+
+    for ri, rl in enumerate(row_labels):
+        axes[ri, 0].set_ylabel(rl, fontsize=9, fontweight="bold")
+
+    for ax in axes.ravel():
+        ax.set_aspect("equal"); ax.tick_params(labelsize=6)
+
+    fig.suptitle("Left-Right Mirror Symmetry Test: B(l,m) vs B(−l,m)\n"
+                 "Row 1: beam  |  Row 2: its left-right mirror  |  Row 3: difference\n"
+                 "Non-zero Row 3 confirms broken mirror symmetry (Y-shape & Random)",
+                 fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    fig.savefig(os.path.join(GT_PLOT, "symmetry_difference_images.png"), dpi=130)
+    plt.close(fig)
+    print("  Saved symmetry_difference_images.png")
+
+    print(f"\n  Symmetry summary (at 30 MHz, max |ΔB|):")
+    print(f"  {'Config':40s}  {'err_LR':>8s}  {'err_UD':>8s}  {'err_180':>8s}")
+    print(f"  {'-'*68}")
+    for _, r in df_sym.iterrows():
+        print(f"  {r['config']:40s}  {r['err_LR']:>8.4f}  {r['err_UD']:>8.4f}  {r['err_180']:>8.2e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FINAL TEXT SUMMARY
 # ══════════════════════════════════════════════════════════════════════════════
 def print_summary(df_sum):
@@ -807,6 +943,9 @@ def main():
 
     # Comparison plots
     comparison_plots(df_sum)
+
+    # Symmetry diagnostic
+    symmetry_diagnostic_plot(configs, af_store)
 
     # Print summary
     print_summary(df_sum)
