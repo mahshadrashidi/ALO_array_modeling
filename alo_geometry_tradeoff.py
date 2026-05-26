@@ -67,6 +67,37 @@ GEOM_COLOR = {"ring": "#2196F3", "y_shape": "#4CAF50",
 DIST_STYLE = {1.0: "-", 5.0: "--"}
 CORE_MARKER= {32: "o", 128: "s"}
 
+# ── UV coverage: 1 MHz channels per sub-band ──────────────────────────────────
+SUBBAND_CH = {
+    "1-5":   np.arange(1.0,  6.0, 1.0),    # 5 channels
+    "5-10":  np.arange(5.0, 11.0, 1.0),    # 6 channels
+    "10-20": np.arange(10.0, 21.0, 1.0),   # 11 channels
+    "20-40": np.arange(20.0, 41.0, 2.0),   # 11 channels at 2 MHz step
+}
+SUBBAND_CH_COLOR = {"1-5":   "#E53935", "5-10": "#FB8C00",
+                    "10-20": "#1E88E5", "20-40": "#8E24AA"}
+
+# ── Contour levels (fraction of peak power, linear) ───────────────────────────
+CONTOUR_LVL = [0.10, 0.30, 0.50]
+CONTOUR_COL = ["cyan", "lime", "white"]
+
+# ── Cross configuration parameters ────────────────────────────────────────────
+# Irregular arm distances break the aliasing rings that equal-arm arrays produce.
+# cross_ew: wider E-W baseline  →  better E-W angular resolution
+# cross_ns: 90° rotation       →  wider N-S baseline, better for low-dec targets
+CROSS_N       = 128
+CROSS_ARMS_EW = {"N": 1.0, "S": 1.0, "E": 5.0, "W": 3.0}  # km
+CROSS_ARMS_NS = {"N": 5.0, "S": 3.0, "E": 1.0, "W": 1.0}  # km
+CROSS_GEOM_LABEL = {
+    "cross_ew": (f"Cross E-W  (N={CROSS_ARMS_EW['N']}, S={CROSS_ARMS_EW['S']},"
+                 f" E={CROSS_ARMS_EW['E']}, W={CROSS_ARMS_EW['W']} km)"),
+    "cross_ns": (f"Cross N-S  (N={CROSS_ARMS_NS['N']}, S={CROSS_ARMS_NS['S']},"
+                 f" E={CROSS_ARMS_NS['E']}, W={CROSS_ARMS_NS['W']} km)"),
+}
+CROSS_COLOR = {"cross_ew": "#009688", "cross_ns": "#FF5722"}
+CROSS_PLOT  = os.path.join(GT_PLOT, "cross_config")
+CROSS_CSV_D = os.path.join(GT_CSV,  "cross_config")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LAYOUT GENERATORS
@@ -167,6 +198,46 @@ LAYOUT_FN = {
     "random":  layout_random,
     "line":    layout_line,
 }
+
+
+def layout_cross_ew(core_n, out_n, dist_km=None):
+    """
+    Cross with irregular arm lengths — wider E-W baseline.
+    Arms (km): N=1, S=1, E=5, W=3  (from CROSS_ARMS_EW).
+    dist_km is ignored; distances are fixed to break equal-arm aliasing.
+    Max E-W baseline = 8 km, N-S = 2 km.
+    """
+    arms    = CROSS_ARMS_EW
+    centres = [
+        (0.0,               arms["N"] * 1e3),   # North
+        (0.0,              -arms["S"] * 1e3),   # South
+        (arms["E"] * 1e3,   0.0),               # East
+        (-arms["W"] * 1e3,  0.0),               # West
+    ]
+    parts = [rect_array_enu(core_n, D_SPACE)]
+    for cx, cy in centres:
+        parts.append(rect_array_enu(out_n, D_SPACE, cx, cy))
+    return np.vstack(parts), centres
+
+
+def layout_cross_ns(core_n, out_n, dist_km=None):
+    """
+    Cross rotated 90° — wider N-S baseline.
+    Arms (km): N=5, S=3, E=1, W=1  (from CROSS_ARMS_NS).
+    Same arm lengths as cross_ew, rotated so the long arms point N-S.
+    Improves beam quality for low-declination exoplanet host stars.
+    """
+    arms    = CROSS_ARMS_NS
+    centres = [
+        (0.0,               arms["N"] * 1e3),
+        (0.0,              -arms["S"] * 1e3),
+        (arms["E"] * 1e3,   0.0),
+        (-arms["W"] * 1e3,  0.0),
+    ]
+    parts = [rect_array_enu(core_n, D_SPACE)]
+    for cx, cy in centres:
+        parts.append(rect_array_enu(out_n, D_SPACE, cx, cy))
+    return np.vstack(parts), centres
 
 
 def cfg_name(geom, core_n, dist_km):
@@ -912,6 +983,430 @@ def print_summary(df_sum):
     print(f"  • Most detections  : {best_d['config_name']}  "
           f"({best_d['n_detectable']} targets)")
     print("="*72)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BEAM CONTOUR PLOTS  (10 % / 30 % / 50 % of peak)
+# ══════════════════════════════════════════════════════════════════════════════
+def beam_contour_plots(configs, af_store):
+    """
+    Overlay contours at 10 %, 30 %, 50 % of normalised peak onto the dB
+    colour map.  Uses the best configurations: 128×128 + 5 km outriggers.
+
+    Outputs
+    -------
+    beam_contours_overview.png  — 4 geometries × 4 bands
+    beam_contours_30MHz.png     — 2×2 panel at 20–40 MHz (≈ 30 MHz)
+    """
+    print("\n── Beam Contour Plots (10 % / 30 % / 50 %) ──")
+    ref = {g: cfg_name(g, 128, 5.0) for g in GEOMETRIES}
+
+    # ── overview: 4 rows (geometry) × 4 cols (band) ───────────────────────────
+    fig, axes = plt.subplots(4, 4, figsize=(18, 16))
+    for gi, geom in enumerate(GEOMETRIES):
+        for ci, (bl, fc) in enumerate(zip(BAND_LABELS, BAND_CTR)):
+            l, m, AF_dB, B_norm = af_store[ref[geom]][bl]
+            ax = axes[gi, ci]
+            im = ax.pcolormesh(l, m, AF_dB, vmin=-30, vmax=0,
+                               cmap="inferno", shading="auto")
+            ax.contour(l, m, B_norm, levels=CONTOUR_LVL,
+                       colors=CONTOUR_COL, linewidths=[0.7, 0.9, 1.2])
+            ax.set_aspect("equal"); ax.tick_params(labelsize=6)
+            if gi == 0: ax.set_title(f"{bl} MHz", fontsize=9)
+            if ci == 0: ax.set_ylabel(f"{GEOM_LABEL[geom]}\nm", fontsize=8)
+            if gi == 3: ax.set_xlabel("l", fontsize=8)
+
+    from matplotlib.lines import Line2D
+    leg = [Line2D([0], [0], color=c, lw=1.5, label=f"{int(lv*100)} % of peak")
+           for lv, c in zip(CONTOUR_LVL, CONTOUR_COL)]
+    fig.legend(handles=leg, loc="lower center", ncol=3, fontsize=10,
+               bbox_to_anchor=(0.5, 0.01))
+    fig.suptitle("Beam Patterns with Contours at 10 %, 30 %, 50 % of Peak\n"
+                 "(128×128 core + 5 km outriggers  |  colour scale −30 to 0 dB)",
+                 fontsize=12)
+    plt.tight_layout(rect=[0, 0.04, 1, 0.97])
+    plt.savefig(os.path.join(GT_PLOT, "beam_contours_overview.png"), dpi=120)
+    plt.close()
+
+    # ── 2×2 at 20–40 MHz with inline contour labels ───────────────────────────
+    fig2, axes2 = plt.subplots(2, 2, figsize=(12, 10))
+    for ax, geom in zip(axes2.ravel(), GEOMETRIES):
+        l, m, AF_dB, B_norm = af_store[ref[geom]]["20-40"]
+        im = ax.pcolormesh(l, m, AF_dB, vmin=-30, vmax=0,
+                           cmap="inferno", shading="auto")
+        plt.colorbar(im, ax=ax, label="|AF|² [dB]", fraction=0.046)
+        cs = ax.contour(l, m, B_norm, levels=CONTOUR_LVL,
+                        colors=CONTOUR_COL, linewidths=[1.0, 1.2, 1.5])
+        ax.clabel(cs, fmt={lv: f"{int(lv*100)}%" for lv in CONTOUR_LVL},
+                  fontsize=7, inline=True)
+        ax.set_title(f"{GEOM_LABEL[geom]}  (20–40 MHz, 128×128 + 5 km)", fontsize=9)
+        ax.set_xlabel("l"); ax.set_ylabel("m")
+        ax.set_aspect("equal")
+    fig2.suptitle("Beam Contours at 10 %, 30 %, 50 % of Peak  —  20–40 MHz band",
+                  fontsize=12)
+    plt.tight_layout()
+    plt.savefig(os.path.join(GT_PLOT, "beam_contours_30MHz.png"), dpi=120)
+    plt.close()
+    print("  Saved beam_contours_overview.png, beam_contours_30MHz.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UV COVERAGE  (station-level, multi-frequency synthesis)
+# ══════════════════════════════════════════════════════════════════════════════
+def _station_xy(cfg):
+    """
+    Return (N_stations, 2) array of station ENU (x, y) positions.
+    Station 0 = core at (0, 0); stations 1..4 = outrigger sub-array centres.
+    """
+    centres = cfg["meta"]["out_centres"]
+    return np.array([(0.0, 0.0)] + [(cx, cy) for cx, cy in centres])
+
+
+def _uv_from_stations(sxy, freq_MHz_arr):
+    """
+    UV coordinates [wavelengths] for all station pairs at each frequency.
+    Returns (u, v) arrays including conjugate baselines.
+    """
+    u, v = [], []
+    n = len(sxy)
+    for fmhz in freq_MHz_arr:
+        lam = C / (fmhz * 1e6)
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = sxy[i, 0] - sxy[j, 0]
+                dy = sxy[i, 1] - sxy[j, 1]
+                u += [dx / lam, -dx / lam]
+                v += [dy / lam, -dy / lam]
+    return np.array(u), np.array(v)
+
+
+def plot_uv_coverage(configs, cross_cfgs=None):
+    """
+    UV coverage for all four best original configs + optional cross configs.
+    Each sub-band is a distinct colour; each baseline traces a radial track
+    as frequency varies across the sub-band (multi-frequency synthesis).
+    """
+    print("\n── UV Coverage Plots ──")
+
+    labels, sxy_list, col_list = [], [], []
+    for g in GEOMETRIES:
+        labels.append(f"{GEOM_LABEL[g]}\n(128×128 + 5 km)")
+        sxy_list.append(_station_xy(configs[cfg_name(g, 128, 5.0)]))
+        col_list.append(GEOM_COLOR[g])
+    if cross_cfgs:
+        for cg, cfg in cross_cfgs.items():
+            short = CROSS_GEOM_LABEL[cg].split("(")[0].strip()
+            labels.append(short + "\n" + CROSS_GEOM_LABEL[cg].split("(")[1].rstrip(")"))
+            sxy_list.append(np.array([(0.0, 0.0)] +
+                                     [(cx, cy) for cx, cy in cfg["meta"]["out_centres"]]))
+            col_list.append(CROSS_COLOR[cg])
+
+    n    = len(labels)
+    ncol = 3
+    nrow = (n + ncol - 1) // ncol
+    fig, axes = plt.subplots(nrow, ncol, figsize=(ncol * 5.5, nrow * 4.8))
+    axes = np.array(axes).ravel()
+
+    for idx, (lbl, sxy) in enumerate(zip(labels, sxy_list)):
+        ax = axes[idx]
+        handles = []
+        for bl, ch in SUBBAND_CH.items():
+            u, v = _uv_from_stations(sxy, ch)
+            sc   = ax.scatter(u / 1e3, v / 1e3, s=5, alpha=0.7,
+                              color=SUBBAND_CH_COLOR[bl], linewidths=0)
+            handles.append(sc)
+        ax.set_xlabel("u  [kλ]", fontsize=9)
+        ax.set_ylabel("v  [kλ]", fontsize=9)
+        ax.set_title(lbl, fontsize=9, fontweight="bold")
+        ax.set_aspect("equal")
+        ax.axhline(0, color="gray", lw=0.4, alpha=0.5)
+        ax.axvline(0, color="gray", lw=0.4, alpha=0.5)
+        ax.grid(True, alpha=0.2)
+        if idx == 0:
+            ax.legend(handles=handles,
+                      labels=[f"{bl} MHz" for bl in SUBBAND_CH],
+                      fontsize=8, markerscale=3, loc="upper right")
+
+    for idx in range(n, len(axes)):
+        axes[idx].set_visible(False)
+
+    fig.suptitle(
+        "UV Coverage  —  Station-Level, Multi-Frequency Synthesis\n"
+        "Each sub-band divided into 1 MHz channels  |  "
+        "radial tracks show baseline scaling with frequency",
+        fontsize=11,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(os.path.join(GT_PLOT, "uv_coverage.png"), dpi=120)
+    plt.close()
+    print("  Saved uv_coverage.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CROSS CONFIGURATION ANALYSIS
+# ══════════════════════════════════════════════════════════════════════════════
+def build_cross_configs():
+    """
+    Build cross_ew and cross_ns — each a 128×128 core + 4 outrigger sub-arrays
+    in N/S/E/W directions with irregular arm distances to reduce aliasing rings.
+    """
+    print("\n── Build cross configurations ──")
+    out_n = CORE_OUT[CROSS_N]
+    cross_cfgs = {}
+    for cg, arms in [("cross_ew", CROSS_ARMS_EW), ("cross_ns", CROSS_ARMS_NS)]:
+        centres = [
+            (0.0,              arms["N"] * 1e3),
+            (0.0,             -arms["S"] * 1e3),
+            (arms["E"] * 1e3,  0.0),
+            (-arms["W"] * 1e3, 0.0),
+        ]
+        pos   = np.vstack([rect_array_enu(CROSS_N, D_SPACE)] +
+                          [rect_array_enu(out_n, D_SPACE, cx, cy)
+                           for cx, cy in centres])
+        B_max = max_baseline_m(centres, CROSS_N)
+        meta  = dict(core_n=CROSS_N, out_n=out_n, out_centres=centres,
+                     N_core=CROSS_N**2, N_out_each=out_n**2,
+                     N_total=len(pos), dist_km=None, geom=cg, B_max_m=B_max)
+        cross_cfgs[cg] = dict(pos_enu=pos, meta=meta)
+        print(f"  {cg}: {len(pos)} elements  |  "
+              f"B_max = {B_max/1e3:.2f} km  |  "
+              f"arms N/S/E/W = {arms['N']}/{arms['S']}/{arms['E']}/{arms['W']} km")
+    return cross_cfgs
+
+
+def run_cross_analysis(cross_cfgs, orig_configs, targets):
+    """
+    Full analysis for cross_ew and cross_ns compared against all four original
+    128×128 + 5 km configurations.
+
+    Produces
+    --------
+    cross_config/layout_cross_overview.png
+    cross_config/beam_contours_cross.png     — 6 rows × 4 bands with contours
+    cross_config/uv_coverage_cross.png       — UV coverage for all 6 configs
+    cross_config/metrics_cross_vs_originals.png
+    cross_config/sensitivity_cross_vs_originals.png
+    cross_config/cross_metrics.csv
+    cross_config/cross_sensitivity.csv
+    """
+    os.makedirs(CROSS_PLOT, exist_ok=True)
+    os.makedirs(CROSS_CSV_D, exist_ok=True)
+
+    print("\n" + "=" * 70)
+    print("  CROSS CONFIGURATION ANALYSIS")
+    print(f"  Core {CROSS_N}×{CROSS_N} + {CORE_OUT[CROSS_N]}×{CORE_OUT[CROSS_N]} outriggers")
+    print("=" * 70)
+
+    # Combined set: 4 original best + 2 cross
+    orig_best  = {g: orig_configs[cfg_name(g, 128, 5.0)] for g in GEOMETRIES}
+    all_cfgs   = {**orig_best, **cross_cfgs}
+    order      = GEOMETRIES + ["cross_ew", "cross_ns"]
+    bar_colors = [GEOM_COLOR.get(g, CROSS_COLOR.get(g)) for g in order]
+    bar_labels = [GEOM_LABEL.get(g, CROSS_GEOM_LABEL.get(g, g).split("(")[0].strip())
+                  for g in order]
+
+    # ── A: Layout plots ────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(1, 2, figsize=(13, 6))
+    for ax, (cg, cfg) in zip(axes, cross_cfgs.items()):
+        pos = cfg["pos_enu"]
+        N_c = CROSS_N ** 2
+        ax.scatter(pos[:N_c, 0] / 1e3, pos[:N_c, 1] / 1e3,
+                   s=0.3, c="steelblue", alpha=0.7, label=f"Core {CROSS_N}×{CROSS_N}")
+        ax.scatter(pos[N_c:, 0] / 1e3, pos[N_c:, 1] / 1e3,
+                   s=2.0, c="tomato",    alpha=0.9, label="Outriggers")
+        arms = CROSS_ARMS_EW if cg == "cross_ew" else CROSS_ARMS_NS
+        for cx, cy in cfg["meta"]["out_centres"]:
+            ax.plot(cx / 1e3, cy / 1e3, "r+", ms=10, mew=1.5)
+        ax.annotate(f"N {arms['N']} km", (0,  arms["N"] + 0.15), ha="center", fontsize=8)
+        ax.annotate(f"S {arms['S']} km", (0, -arms["S"] - 0.28), ha="center", fontsize=8)
+        ax.annotate(f"E {arms['E']} km", ( arms["E"] + 0.15, 0), ha="left",   fontsize=8)
+        ax.annotate(f"W {arms['W']} km", (-arms["W"] - 0.15, 0), ha="right",  fontsize=8)
+        ax.set_xlabel("East [km]"); ax.set_ylabel("North [km]")
+        ax.set_title(CROSS_GEOM_LABEL[cg], fontsize=9)
+        ax.set_aspect("equal")
+        ax.legend(markerscale=8, fontsize=8)
+        ax.grid(True, alpha=0.25)
+    fig.suptitle(f"Cross Array Layouts  |  {CROSS_N}×{CROSS_N} core + "
+                 f"{CORE_OUT[CROSS_N]}×{CORE_OUT[CROSS_N]} outrigger sub-arrays", fontsize=11)
+    plt.tight_layout()
+    fig.savefig(os.path.join(CROSS_PLOT, "layout_cross_overview.png"), dpi=120)
+    plt.close()
+    print("  Saved layout_cross_overview.png")
+
+    # ── B: Compute AF for all 6 configs ───────────────────────────────────────
+    print("  Computing AF for 6 configurations × 4 bands …")
+    all_af = {}
+    for name, cfg in all_cfgs.items():
+        all_af[name] = {}
+        for bl, fc in zip(BAND_LABELS, BAND_CTR):
+            l, m, AF_dB, B_norm = compute_af(cfg["pos_enu"], cfg["meta"], fc, N_GRID)
+            all_af[name][bl] = (l, m, AF_dB, B_norm)
+
+    # ── C: Beam contour plot: 6 rows × 4 cols ─────────────────────────────────
+    fig, axes = plt.subplots(6, 4, figsize=(18, 26))
+    for ri, name in enumerate(order):
+        row_lbl = GEOM_LABEL.get(name, CROSS_GEOM_LABEL.get(name, name))
+        for ci, (bl, fc) in enumerate(zip(BAND_LABELS, BAND_CTR)):
+            l, m, AF_dB, B_norm = all_af[name][bl]
+            ax = axes[ri, ci]
+            im = ax.pcolormesh(l, m, AF_dB, vmin=-30, vmax=0,
+                               cmap="inferno", shading="auto")
+            ax.contour(l, m, B_norm, levels=CONTOUR_LVL,
+                       colors=CONTOUR_COL, linewidths=[0.7, 0.9, 1.2])
+            ax.set_aspect("equal"); ax.tick_params(labelsize=6)
+            if ri == 0: ax.set_title(f"{bl} MHz", fontsize=9)
+            if ci == 0:
+                ax.set_ylabel(row_lbl.replace("(", "\n("), fontsize=7)
+            if ri == 5: ax.set_xlabel("l", fontsize=8)
+
+    from matplotlib.lines import Line2D
+    leg = [Line2D([0], [0], color=c, lw=1.5, label=f"{int(lv*100)}%")
+           for lv, c in zip(CONTOUR_LVL, CONTOUR_COL)]
+    fig.legend(handles=leg, loc="lower center", ncol=3, fontsize=10,
+               bbox_to_anchor=(0.5, 0.005))
+    fig.suptitle(
+        "Beam Patterns with 10 % / 30 % / 50 % Contours\n"
+        "Rows 1–4: original configs (128×128 + 5 km)  |  Rows 5–6: cross configs",
+        fontsize=11,
+    )
+    plt.tight_layout(rect=[0, 0.02, 1, 0.98])
+    fig.savefig(os.path.join(CROSS_PLOT, "beam_contours_cross.png"), dpi=120)
+    plt.close()
+    print("  Saved beam_contours_cross.png")
+
+    # ── D: UV coverage for all 6 configs ──────────────────────────────────────
+    fig, axes = plt.subplots(2, 3, figsize=(17, 11))
+    axes = axes.ravel()
+    for idx, name in enumerate(order):
+        cfg = all_cfgs[name]
+        sxy = np.array([(0.0, 0.0)] +
+                       [(cx, cy) for cx, cy in cfg["meta"]["out_centres"]])
+        ax  = axes[idx]
+        for bl, ch in SUBBAND_CH.items():
+            u, v = _uv_from_stations(sxy, ch)
+            ax.scatter(u / 1e3, v / 1e3, s=5, alpha=0.7,
+                       color=SUBBAND_CH_COLOR[bl], linewidths=0,
+                       label=f"{bl} MHz")
+        lbl = GEOM_LABEL.get(name, CROSS_GEOM_LABEL.get(name, name))
+        ax.set_title(lbl.replace("(", "\n("), fontsize=9, fontweight="bold")
+        ax.set_xlabel("u  [kλ]", fontsize=9); ax.set_ylabel("v  [kλ]", fontsize=9)
+        ax.set_aspect("equal")
+        ax.axhline(0, color="gray", lw=0.4, alpha=0.5)
+        ax.axvline(0, color="gray", lw=0.4, alpha=0.5)
+        ax.grid(True, alpha=0.2)
+        if idx == 0:
+            ax.legend(fontsize=8, markerscale=3, loc="upper right")
+    fig.suptitle(
+        "UV Coverage — Original Configs vs Cross Configs  (station-level, multi-band)\n"
+        "Radial tracks = one baseline at multiple frequencies  |  colours = sub-bands",
+        fontsize=11,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.savefig(os.path.join(CROSS_PLOT, "uv_coverage_cross.png"), dpi=120)
+    plt.close()
+    print("  Saved uv_coverage_cross.png")
+
+    # ── E: Beam metrics comparison ────────────────────────────────────────────
+    mtr_rows = []
+    for name in order:
+        for bl, fc in zip(BAND_LABELS, BAND_CTR):
+            l, m, _, B_norm = all_af[name][bl]
+            mtr = beam_metrics(B_norm, l, m, fc)
+            hpbw = 2 * np.sqrt(mtr["Omega_B"] / np.pi)
+            mtr_rows.append(dict(
+                config=name, band=bl, freq_MHz=fc,
+                HPBW_arcmin=np.degrees(hpbw) * 60.0,
+                MSL_dB=mtr["MSL_dB"],
+                D_peak=mtr["D_peak"],
+                Omega_B_sr=mtr["Omega_B"],
+            ))
+    df_mtr = pd.DataFrame(mtr_rows)
+    df_mtr.to_csv(os.path.join(CROSS_CSV_D, "cross_metrics.csv"), index=False)
+
+    df_ref = df_mtr[df_mtr.band == "20-40"].set_index("config")
+    x = np.arange(len(order))
+    fig, axes3 = plt.subplots(1, 3, figsize=(16, 5))
+    for ax, col, ylabel, fmt in [
+        (axes3[0], "HPBW_arcmin", "HPBW [arcmin]",           ".1f"),
+        (axes3[1], "MSL_dB",      "Max sidelobe level [dB]",  ".1f"),
+        (axes3[2], "D_peak",      "Peak directivity",          ".2e"),
+    ]:
+        vals = [df_ref.loc[g, col] if g in df_ref.index else np.nan for g in order]
+        ax.bar(x, vals, color=bar_colors, alpha=0.85, edgecolor="k", linewidth=0.5)
+        ax.set_xticks(x)
+        ax.set_xticklabels(bar_labels, rotation=20, ha="right", fontsize=8)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.grid(axis="y", alpha=0.3)
+        for xi, val in enumerate(vals):
+            if not np.isnan(val):
+                ax.text(xi, val * 1.02 if val > 0 else val * 0.98,
+                        f"{val:{fmt}}", ha="center", fontsize=7)
+    fig.suptitle(
+        "Beam Metrics at 20–40 MHz  —  Original (128×128+5km) vs Cross Configs",
+        fontsize=11,
+    )
+    plt.tight_layout()
+    fig.savefig(os.path.join(CROSS_PLOT, "metrics_cross_vs_originals.png"), dpi=120)
+    plt.close()
+    print("  Saved metrics_cross_vs_originals.png, cross_metrics.csv")
+
+    # ── F: Sensitivity / exoplanet detection yield ────────────────────────────
+    sens_rows = []
+    for name in order:
+        cfg   = all_cfgs[name]
+        N     = cfg["meta"]["N_total"]
+        B_max = cfg["meta"]["B_max_m"]
+        for bl, (f_lo, f_hi), fc in zip(BAND_LABELS, SUBBANDS, BAND_CTR):
+            bw   = f_hi - f_lo
+            band_tgts = targets[
+                (targets["frequency_MHz"] >= f_lo) &
+                (targets["frequency_MHz"] <  f_hi)
+            ]
+            for _, trow in band_tgts.iterrows():
+                t_h  = required_t_hours(trow["flux_mJy"], N, fc, bw, B_max)
+                feas = classify_feasibility(t_h)
+                sens_rows.append(dict(
+                    config=name, target=trow["Name"],
+                    band=bl, t_h=t_h if np.isfinite(t_h) else 1e9,
+                    feasibility=feas,
+                ))
+    df_sens = pd.DataFrame(sens_rows)
+    df_sens.to_csv(os.path.join(CROSS_CSV_D, "cross_sensitivity.csv"), index=False)
+
+    n_det = {name: int(df_sens[(df_sens.config == name) &
+                                (df_sens.t_h < 100)]["target"].nunique())
+             for name in order}
+
+    fig2, ax2 = plt.subplots(figsize=(9, 5))
+    ax2.bar(x, [n_det[g] for g in order], color=bar_colors,
+            alpha=0.85, edgecolor="k", linewidth=0.5)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(bar_labels, rotation=20, ha="right", fontsize=9)
+    ax2.set_ylabel("Exoplanet targets detectable in < 100 h", fontsize=10)
+    ax2.grid(axis="y", alpha=0.3)
+    for xi, name in enumerate(order):
+        ax2.text(xi, n_det[name] + 0.3, str(n_det[name]),
+                 ha="center", fontsize=9, fontweight="bold")
+    fig2.suptitle(
+        "Exoplanet Detection Yield  (t < 100 h)  —  Cross vs Original Configs",
+        fontsize=11,
+    )
+    plt.tight_layout()
+    fig2.savefig(os.path.join(CROSS_PLOT, "sensitivity_cross_vs_originals.png"), dpi=120)
+    plt.close()
+    print("  Saved sensitivity_cross_vs_originals.png, cross_sensitivity.csv")
+
+    # ── G: Print summary table ─────────────────────────────────────────────────
+    print(f"\n  {'Config':32s}  N_elem  B_max km  n_det(<100h)  "
+          f"HPBW′  MSL dB")
+    for name in order:
+        cfg  = all_cfgs[name]
+        lbl  = GEOM_LABEL.get(name, CROSS_GEOM_LABEL.get(name, name)).split("\n")[0]
+        hpbw = df_ref.loc[name, "HPBW_arcmin"] if name in df_ref.index else float("nan")
+        msl  = df_ref.loc[name, "MSL_dB"]      if name in df_ref.index else float("nan")
+        print(f"  {lbl:32s}  {cfg['meta']['N_total']:6d}  "
+              f"{cfg['meta']['B_max_m']/1e3:8.2f}  {n_det[name]:12d}  "
+              f"{hpbw:6.1f}  {msl:6.1f}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1835,8 +2330,18 @@ def main():
     # Comparison plots
     comparison_plots(df_sum)
 
+    # Beam contour plots: 10%, 30%, 50% of peak
+    beam_contour_plots(configs, af_store)
+
     # Symmetry diagnostic
     symmetry_diagnostic_plot(configs, af_store)
+
+    # UV coverage with multi-frequency synthesis + cross configs
+    cross_cfgs = build_cross_configs()
+    plot_uv_coverage(configs, cross_cfgs)
+
+    # Cross configuration analysis
+    run_cross_analysis(cross_cfgs, configs, targets)
 
     # Print summary
     print_summary(df_sum)
