@@ -1,0 +1,4 @@
+Configuration,N_feasible,N_aspirational,N_total_detectable,feas_1-5,feas_5-10,feas_10-20,feas_20-40
+Config A,34,17,51,1,1,6,26
+Config B,33,18,51,1,1,6,25
+Core Only,9,3,12,1,1,4,3
