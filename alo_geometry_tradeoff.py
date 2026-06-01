@@ -4164,6 +4164,869 @@ def run_deployment_study():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FULL COMPARISON OF 6 CONFIGURATIONS (A–F)
+# Produces separate + combined plots for:
+#   1. Sensitivity         2. Beam-pattern quality   3. RMS noise
+#   4. UV coverage (100h)  5. Number of detections
+# All saved under outputs/.../Comparison/
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Colour / style palette — consistent across all comparison plots
+CFG_COLORS = {
+    "ring_a_c32x32_out2x2_short":   "#1976D2",   # blue
+    "ring_b_c32x32_out2x2_long":    "#F57C00",   # orange
+    "ring_c_c128x128_out4x4_short": "#388E3C",   # green
+    "ring_d_c128x128_out4x4_long":  "#D32F2F",   # red
+    "cross_e_c32x32_out2x2_asym":   "#7B1FA2",   # purple
+    "cross_f_c128x128_out4x4_asym": "#5D4037",   # brown
+}
+CFG_SHORT = {
+    "ring_a_c32x32_out2x2_short":   "A: Ring 32×32\nshort",
+    "ring_b_c32x32_out2x2_long":    "B: Ring 32×32\nlong",
+    "ring_c_c128x128_out4x4_short": "C: Ring 128×128\nshort",
+    "ring_d_c128x128_out4x4_long":  "D: Ring 128×128\nlong",
+    "cross_e_c32x32_out2x2_asym":   "E: Cross 32×32",
+    "cross_f_c128x128_out4x4_asym": "F: Cross 128×128",
+}
+CFG_ORDER = list(CFG_COLORS.keys())
+
+CMP_ROOT = os.path.join(GT_PLOT, "Comparison")
+CMP_SEP  = os.path.join(CMP_ROOT, "separate")
+CMP_CMB  = os.path.join(CMP_ROOT, "combined")
+CMP_CSV  = os.path.join(GT_CSV,  "Comparison")
+for _d in [CMP_ROOT, CMP_SEP, CMP_CMB, CMP_CSV]:
+    os.makedirs(_d, exist_ok=True)
+
+
+# ── helper: UV coverage for 100 hours of observation ─────────────────────────
+
+def _uv_100h(cfg, max_hr=100, dt_min=30, freq_MHz=30.0,
+             src_ra_deg=344.4, src_dec_deg=20.5):
+    """
+    Accumulate UV baselines for up to max_hr hours of actual on-source time.
+    Uses Moon sidereal rotation; source is 51 Peg b (RA=344.4°, Dec=+20.5°).
+    Returns u [kλ], v [kλ], and actual hours accumulated.
+    """
+    stations   = np.array([(0.0, 0.0)] +
+                          [(cx, cy) for cx, cy in cfg["meta"]["out_centres"]])
+    src_ra     = np.radians(src_ra_deg)
+    src_dec    = np.radians(src_dec_deg)
+    lat        = np.radians(PHI_DEG)
+    lon        = np.radians(LAM_DEG)
+    omega      = 2 * np.pi / (27.3 * 24.0)   # Moon sidereal rotation [rad/hr]
+    lam        = C / (freq_MHz * 1e6)
+    dt_hr      = dt_min / 60.0
+    n_max      = int(35 * 24 / dt_hr)         # search up to 35 days
+
+    u_all, v_all = [], []
+    vis_hr = 0.0
+    for step in range(n_max):
+        if vis_hr >= max_hr:
+            break
+        t_hr   = step * dt_hr
+        psi    = omega * t_hr
+        lst    = lon + omega * t_hr
+        ha     = lst - src_ra
+        sin_el = (np.sin(lat) * np.sin(src_dec) +
+                  np.cos(lat) * np.cos(src_dec) * np.cos(ha))
+        if sin_el <= 0:
+            continue
+        vis_hr += dt_hr
+        cos_el = np.sqrt(max(1 - sin_el**2, 0.0))
+        Rmat   = np.array([[np.cos(psi), -np.sin(psi)],
+                            [np.sin(psi),  np.cos(psi)]])
+        n_st   = len(stations)
+        for i in range(n_st):
+            for j in range(i + 1, n_st):
+                dxy     = stations[i] - stations[j]
+                dxy_rot = Rmat @ dxy
+                u_v = dxy_rot[0] / lam * cos_el / 1e3
+                v_v = dxy_rot[1] / lam / 1e3
+                u_all.extend([u_v, -u_v])
+                v_all.extend([v_v, -v_v])
+    return np.array(u_all), np.array(v_all), vis_hr
+
+
+# ── SEPARATE plots — one function per property ────────────────────────────────
+
+def _cmp_sep_dir(cfg_id):
+    d = os.path.join(CMP_SEP, cfg_id)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def cmp_sep_sensitivity(name, cfg, df_sens_cfg):
+    """Sensitivity vs integration time for one config — all 4 bands."""
+    sdir   = _cmp_sep_dir(name)
+    meta   = cfg["meta"]
+    N      = meta["N_total"]
+    B_max  = meta["B_max_m"]
+    t_arr  = np.logspace(-2, 4, 500)
+    colors = {"1-5":"#E53935","5-10":"#FB8C00","10-20":"#1E88E5","20-40":"#8E24AA"}
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for bl, (f_lo, f_hi), fc in zip(BAND_LABELS, SUBBANDS, BAND_CTR):
+        bw   = f_hi - f_lo
+        sc   = confusion_limit_Jy(fc, B_max)
+        st1  = sigma_thermal_Jy(N, fc, bw, 1.0)
+        stot = np.sqrt((st1 / np.sqrt(t_arr)) ** 2 + sc ** 2)
+        ax.loglog(t_arr, NSIGMA * stot * 1e3, color=colors[bl], lw=2,
+                  label=f"{bl} MHz")
+        ax.axhline(NSIGMA * sc * 1e3, color=colors[bl], ls=":", lw=0.9, alpha=0.6)
+
+    ax.axvline(100, color="gray", ls="--", lw=1.2, label="100 h")
+    ax.set_xlabel("Integration time [h]", fontsize=10)
+    ax.set_ylabel("5σ Total Sensitivity [mJy]", fontsize=10)
+    ax.set_title(f"Sensitivity vs Integration Time\n{meta['label']}", fontsize=9)
+    ax.legend(fontsize=8); ax.grid(True, alpha=0.3, which="both")
+    ax.text(0.97, 0.03, "Dotted = confusion floor",
+            transform=ax.transAxes, fontsize=8, ha="right",
+            color="gray", style="italic")
+    plt.tight_layout()
+    plt.savefig(os.path.join(sdir, "sensitivity.png"), dpi=110)
+    plt.close()
+
+
+def cmp_sep_beam(name, cfg, af_data):
+    """Beam pattern: 2-D colormap + 1-D cut + contours at 30 MHz."""
+    sdir = _cmp_sep_dir(name)
+    bl   = "20-40"
+    l, m, AF_dB, B_norm = af_data[bl]
+    mtr  = beam_metrics(B_norm, l, m, BAND_CTR[BAND_LABELS.index(bl)])
+    hpbw = 2 * np.sqrt(mtr["Omega_B"] / np.pi)
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+    # 2-D beam with contours
+    ax = axes[0]
+    im = ax.pcolormesh(l, m, AF_dB, vmin=-30, vmax=0, cmap="inferno",
+                       shading="auto")
+    plt.colorbar(im, ax=ax, label="|AF|² [dB]", fraction=0.046)
+    ax.contour(l, m, B_norm, levels=CONTOUR_LVL,
+               colors=CONTOUR_COL, linewidths=[0.8, 1.0, 1.3])
+    ax.set_aspect("equal")
+    ax.set_xlabel("l"); ax.set_ylabel("m")
+    ax.set_title(f"2-D Beam  (20–40 MHz ≈ 30 MHz)\n"
+                 f"HPBW={np.degrees(hpbw)*60:.1f}′  MSL={mtr['MSL_dB']:.1f} dB",
+                 fontsize=9)
+
+    # 1-D cut
+    ax2  = axes[1]
+    mid  = len(m) // 2
+    cut  = 10 * np.log10(B_norm[mid, :] + 1e-20)
+    ax2.plot(l, cut, lw=2, color=CFG_COLORS.get(name, "steelblue"))
+    ax2.axhline(-3,  color="red",    ls="--", lw=1, label="−3 dB")
+    ax2.axhline(-10, color="orange", ls=":",  lw=1, label="−10 dB")
+    ax2.axhline(-20, color="purple", ls="-.", lw=1, label="−20 dB")
+    ax2.set_ylim(-35, 2)
+    ax2.set_xlabel("l (East direction cosine)")
+    ax2.set_ylabel("Normalised power [dB]")
+    ax2.set_title("1-D beam cut (m = 0)", fontsize=9)
+    ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3)
+
+    cfg_lbl = cfg["meta"]["label"]
+    fig.suptitle(f"Beam Pattern — {cfg_lbl}", fontsize=9, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(sdir, "beam_pattern.png"), dpi=110)
+    plt.close()
+
+
+def cmp_sep_rms(name, cfg):
+    """RMS noise level vs integration time — thermal, confusion, total."""
+    sdir   = _cmp_sep_dir(name)
+    meta   = cfg["meta"]
+    N      = meta["N_total"]
+    B_max  = meta["B_max_m"]
+    t_arr  = np.logspace(-2, 4, 500)
+    fc     = REF_FREQ      # 30 MHz
+    bw_ch  = 1.0           # 1 MHz channel (single-channel RMS)
+    bw_ref = REF_BW        # 20 MHz for reference sensitivity
+
+    sc     = confusion_limit_Jy(fc, B_max)
+    st1_ch = sigma_thermal_Jy(N, fc, bw_ch, 1.0)   # 1-MHz channel RMS
+    st1_bw = sigma_thermal_Jy(N, fc, bw_ref, 1.0)  # 20-MHz band RMS
+
+    st_ch  = st1_ch / np.sqrt(t_arr)
+    st_bw  = st1_bw / np.sqrt(t_arr)
+    tot_bw = np.sqrt(st_bw**2 + sc**2)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.loglog(t_arr, st_ch  * 1e3,  lw=2, color="steelblue",
+              label=f"Thermal RMS (1 MHz ch)")
+    ax.loglog(t_arr, st_bw  * 1e3,  lw=2, color="steelblue", ls="--",
+              label=f"Thermal RMS ({REF_BW} MHz band)")
+    ax.loglog(t_arr, tot_bw * 1e3,  lw=2, color="tomato",
+              label=f"Total noise (thermal + confusion)")
+    ax.axhline(sc * 1e3,  color="gray", ls=":", lw=1.5,
+               label=f"Confusion floor {sc*1e3:.4f} mJy")
+    ax.axvline(100, color="black", ls="--", lw=1, alpha=0.6, label="100 h")
+
+    # Mark RMS at 100h
+    idx100 = np.argmin(np.abs(t_arr - 100))
+    for val, col, lbl in [
+        (st_ch[idx100]  * 1e3, "steelblue", f"σ_th(1MHz,100h)={st_ch[idx100]*1e3:.4f}mJy"),
+        (tot_bw[idx100] * 1e3, "tomato",    f"σ_tot(100h)={tot_bw[idx100]*1e3:.4f}mJy"),
+    ]:
+        ax.scatter([100], [val], s=60, color=col, zorder=5)
+        ax.annotate(lbl, (100, val), xytext=(5, 0), textcoords="offset points",
+                    fontsize=7.5, color=col)
+
+    ax.set_xlabel("Integration time [h]", fontsize=10)
+    ax.set_ylabel("RMS noise [mJy]", fontsize=10)
+    ax.set_title(f"RMS Noise Level vs Integration Time  (30 MHz)\n"
+                 f"{meta['label']}", fontsize=9)
+    ax.legend(fontsize=8); ax.grid(True, alpha=0.3, which="both")
+    plt.tight_layout()
+    plt.savefig(os.path.join(sdir, "rms_noise.png"), dpi=110)
+    plt.close()
+
+
+def cmp_sep_uv(name, cfg, u_kl, v_kl, vis_hr):
+    """UV coverage accumulated over 100 hours for one config."""
+    sdir = _cmp_sep_dir(name)
+    n_st = 1 + len(cfg["meta"]["out_centres"])   # stations
+    n_bl = n_st * (n_st - 1) // 2
+
+    fig, ax = plt.subplots(figsize=(7, 7))
+    ax.scatter(u_kl, v_kl, s=0.4, alpha=0.4, linewidths=0,
+               c=CFG_COLORS.get(name, "steelblue"))
+    ax.set_xlabel("u  [kλ]  @30 MHz", fontsize=10)
+    ax.set_ylabel("v  [kλ]  @30 MHz", fontsize=10)
+    ax.set_aspect("equal")
+    ax.axhline(0, color="gray", lw=0.4); ax.axvline(0, color="gray", lw=0.4)
+    ax.grid(True, alpha=0.2)
+    ax.set_title(f"UV Coverage — 100 h observation\n"
+                 f"{cfg['meta']['label']}\n"
+                 f"{n_st} stations → {n_bl} baselines  |  "
+                 f"{vis_hr:.0f} h visibility  |  "
+                 f"{len(u_kl)//2:,} UV points",
+                 fontsize=8)
+    plt.tight_layout()
+    plt.savefig(os.path.join(sdir, "uv_coverage_100h.png"), dpi=110)
+    plt.close()
+
+
+def cmp_sep_detections(name, cfg, df_sens_cfg):
+    """Detection bar chart + scatter for one config."""
+    sdir = _cmp_sep_dir(name)
+    colors = {"1-5":"#E53935","5-10":"#FB8C00","10-20":"#1E88E5","20-40":"#8E24AA"}
+
+    # Per-band feasible counts
+    feas_per_band = {}
+    feas_names    = set()
+    asp_names     = set()
+    for bl in BAND_LABELS:
+        sub = df_sens_cfg[df_sens_cfg["frequency_band"] == bl]
+        f   = sub[sub["feasibility"] == "feasible"]["target_name"].unique()
+        a   = sub[sub["feasibility"] == "aspirational"]["target_name"].unique()
+        feas_per_band[bl] = (len(f), len(a))
+        feas_names.update(f)
+        asp_names.update(a)
+    all_det = feas_names | asp_names
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+
+    # Stacked bar
+    feas_vals = [feas_per_band[b][0] for b in BAND_LABELS]
+    asp_vals  = [feas_per_band[b][1] for b in BAND_LABELS]
+    x_pos     = np.arange(len(BAND_LABELS))
+    bars1 = ax1.bar(x_pos, feas_vals, color=[colors[b] for b in BAND_LABELS],
+                    edgecolor="white", label="Feasible (<100 h)")
+    bars2 = ax1.bar(x_pos, asp_vals, bottom=feas_vals,
+                    color=[colors[b] for b in BAND_LABELS], alpha=0.4,
+                    edgecolor="white", hatch="//", label="Aspirational (100-1000 h)")
+    for i, (f, a) in enumerate(zip(feas_vals, asp_vals)):
+        total = f + a
+        if total:
+            ax1.text(i, total + 0.15, str(total), ha="center",
+                     fontsize=10, fontweight="bold")
+    ax1.set_xticks(x_pos); ax1.set_xticklabels(BAND_LABELS, fontsize=10)
+    ax1.set_ylabel("Number of targets", fontsize=10)
+    ax1.set_title(f"Detections per band\n"
+                  f"Total unique: {len(feas_names)} feasible / "
+                  f"{len(asp_names)} aspirational",
+                  fontsize=9)
+    ax1.legend(fontsize=9); ax1.grid(axis="y", alpha=0.3)
+
+    # Flux vs required time scatter
+    if len(df_sens_cfg):
+        best_t = df_sens_cfg.groupby("target_name")["required_t_h"].min().reset_index()
+        sub_f  = best_t[best_t["required_t_h"] < 100]
+        sub_a  = best_t[(best_t["required_t_h"] >= 100) & (best_t["required_t_h"] < 1000)]
+        flux_map = df_sens_cfg.drop_duplicates("target_name").set_index("target_name")["target_flux_mJy"]
+        for subset, col, lbl in [(sub_f, "steelblue", "Feasible"),
+                                  (sub_a, "orange",    "Aspirational")]:
+            if len(subset):
+                fluxes = subset["target_name"].map(flux_map)
+                ax2.scatter(fluxes, subset["required_t_h"],
+                            c=col, alpha=0.75, edgecolors="k", lw=0.4,
+                            s=30, label=lbl)
+                for _, row in subset.iterrows():
+                    if row["required_t_h"] < 100:
+                        ax2.annotate(row["target_name"][:12],
+                                     (flux_map.get(row["target_name"], np.nan),
+                                      row["required_t_h"]),
+                                     fontsize=5.5, alpha=0.8,
+                                     xytext=(2, 2), textcoords="offset points")
+        ax2.axhline(100,  color="red",   ls="--", lw=1.2, label="100 h")
+        ax2.axhline(1000, color="orange",ls=":",  lw=1.2, label="1000 h")
+        ax2.set_xscale("log"); ax2.set_yscale("log")
+        ax2.set_xlabel("Target flux [mJy]", fontsize=10)
+        ax2.set_ylabel("Required integration time [h]", fontsize=10)
+        ax2.set_title("Flux vs required time", fontsize=9)
+        ax2.legend(fontsize=8); ax2.grid(True, alpha=0.3, which="both")
+
+    fig.suptitle(f"Detection Results — {cfg['meta']['label']}", fontsize=9,
+                 fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(sdir, "detections.png"), dpi=110)
+    plt.close()
+
+    # Save target list
+    with open(os.path.join(sdir, "detected_targets.txt"), "w") as fh:
+        fh.write(f"Config: {name}\n{'='*60}\n")
+        fh.write(f"FEASIBLE targets (<100 h):\n")
+        for t in sorted(feas_names):
+            row = df_sens_cfg[(df_sens_cfg["target_name"] == t) &
+                               (df_sens_cfg["feasibility"] == "feasible")]
+            best = row["required_t_h"].min() if len(row) else np.inf
+            fh.write(f"  {t:<30s}  t_req={best:.1f} h\n")
+        fh.write(f"\nASPIRATIONAL targets (100–1000 h):\n")
+        for t in sorted(asp_names - feas_names):
+            fh.write(f"  {t}\n")
+
+
+# ── COMBINED plots — all 6 configs on one figure ──────────────────────────────
+
+def cmp_cmb_sensitivity(all_cfgs):
+    """Combined sensitivity plot — all 6 configs, at 30 MHz."""
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
+    t_arr = np.logspace(-2, 4, 500)
+    for ax, core_label, keys in [
+        (axes[0], "32×32 core", CFG_ORDER[:2] + [CFG_ORDER[4]]),
+        (axes[1], "128×128 core", CFG_ORDER[2:4] + [CFG_ORDER[5]]),
+    ]:
+        for name in keys:
+            cfg   = all_cfgs[name]
+            N     = cfg["meta"]["N_total"]
+            B_max = cfg["meta"]["B_max_m"]
+            bw    = REF_BW
+            sc    = confusion_limit_Jy(REF_FREQ, B_max)
+            st1   = sigma_thermal_Jy(N, REF_FREQ, bw, 1.0)
+            stot  = np.sqrt((st1 / np.sqrt(t_arr)) ** 2 + sc ** 2)
+            ax.loglog(t_arr, NSIGMA * stot * 1e3,
+                      color=CFG_COLORS[name], lw=2.5,
+                      label=CFG_SHORT[name].replace("\n", " "))
+        ax.axvline(100, color="gray", ls="--", lw=1.2, label="100 h")
+        ax.set_xlabel("Integration time [h]", fontsize=11)
+        ax.set_title(f"{core_label} — 5σ Sensitivity (30 MHz, 20 MHz BW)", fontsize=10)
+        ax.legend(fontsize=9); ax.grid(True, alpha=0.3, which="both")
+    axes[0].set_ylabel("5σ Total Sensitivity [mJy]", fontsize=11)
+    fig.suptitle("Sensitivity Comparison — All 6 Configurations",
+                 fontsize=13, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(CMP_CMB, "sensitivity_comparison.png"), dpi=120)
+    plt.close()
+
+
+def cmp_cmb_beam(all_cfgs, af_store_new):
+    """Combined beam pattern — 2×3 panel at 30 MHz."""
+    bl   = "20-40"
+    fig, axes = plt.subplots(2, 3, figsize=(18, 11))
+    axes = axes.ravel()
+    metrics_table = []
+
+    for ax, name in zip(axes, CFG_ORDER):
+        l, m, AF_dB, B_norm = af_store_new[name][bl]
+        fc  = BAND_CTR[BAND_LABELS.index(bl)]
+        mtr = beam_metrics(B_norm, l, m, fc)
+        hpbw_rad = 2 * np.sqrt(mtr["Omega_B"] / np.pi)
+        hpbw_arcmin = np.degrees(hpbw_rad) * 60.0
+
+        im = ax.pcolormesh(l, m, AF_dB, vmin=-30, vmax=0,
+                           cmap="inferno", shading="auto")
+        ax.contour(l, m, B_norm, levels=CONTOUR_LVL,
+                   colors=CONTOUR_COL, linewidths=[0.7, 0.9, 1.2])
+        plt.colorbar(im, ax=ax, label="dB", fraction=0.046, pad=0.04)
+        ax.set_aspect("equal")
+        ax.set_xlabel("l", fontsize=9); ax.set_ylabel("m", fontsize=9)
+        ax.set_title(f"{CFG_SHORT[name].replace(chr(10), ' ')}\n"
+                     f"HPBW={hpbw_arcmin:.1f}′  MSL={mtr['MSL_dB']:.1f} dB",
+                     fontsize=8.5, color=CFG_COLORS[name], fontweight="bold")
+        # border colour
+        for spine in ax.spines.values():
+            spine.set_edgecolor(CFG_COLORS[name]); spine.set_linewidth(2)
+        metrics_table.append(dict(config=name, HPBW_arcmin=hpbw_arcmin,
+                                  MSL_dB=mtr["MSL_dB"]))
+
+    fig.suptitle("Beam Pattern Comparison — All 6 Configurations  (20–40 MHz ≈ 30 MHz)\n"
+                 "Contours: 10% (cyan) / 30% (green) / 50% (white) of peak",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(CMP_CMB, "beam_pattern_comparison.png"), dpi=120)
+    plt.close()
+
+    # 1-D cuts overlay
+    fig2, axes2 = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
+    for ax2, keys, core_l in [(axes2[0], CFG_ORDER[:2]+[CFG_ORDER[4]], "32×32"),
+                               (axes2[1], CFG_ORDER[2:4]+[CFG_ORDER[5]], "128×128")]:
+        for name in keys:
+            l, m, _, B_norm = af_store_new[name][bl]
+            mid = len(m) // 2
+            cut = 10 * np.log10(B_norm[mid, :] + 1e-20)
+            ax2.plot(l, cut, color=CFG_COLORS[name], lw=2,
+                     label=CFG_SHORT[name].replace("\n", " "))
+        ax2.axhline(-3,  color="red",    ls="--", lw=0.9, label="−3 dB")
+        ax2.axhline(-10, color="orange", ls=":",  lw=0.9, label="−10 dB")
+        ax2.set_ylim(-35, 2)
+        ax2.set_xlabel("l  (East direction cosine)", fontsize=10)
+        ax2.set_title(f"{core_l} core — 1-D beam cuts (30 MHz)", fontsize=10)
+        ax2.legend(fontsize=8, ncol=2); ax2.grid(True, alpha=0.3)
+    axes2[0].set_ylabel("Normalised power [dB]", fontsize=10)
+    fig2.suptitle("1-D Beam Cut Comparison — All 6 Configurations  (20–40 MHz, m=0 slice)",
+                  fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(CMP_CMB, "beam_1D_comparison.png"), dpi=120)
+    plt.close()
+    return metrics_table
+
+
+def cmp_cmb_rms(all_cfgs):
+    """Combined RMS noise at 30 MHz — all 6 configs."""
+    t_arr = np.logspace(-2, 4, 500)
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
+    for ax, keys, core_l in [(axes[0], CFG_ORDER[:2]+[CFG_ORDER[4]], "32×32"),
+                              (axes[1], CFG_ORDER[2:4]+[CFG_ORDER[5]], "128×128")]:
+        for name in keys:
+            cfg   = all_cfgs[name]
+            N     = cfg["meta"]["N_total"]
+            B_max = cfg["meta"]["B_max_m"]
+            sc    = confusion_limit_Jy(REF_FREQ, B_max)
+            st1   = sigma_thermal_Jy(N, REF_FREQ, REF_BW, 1.0)
+            stot  = np.sqrt((st1 / np.sqrt(t_arr)) ** 2 + sc ** 2)
+            ax.loglog(t_arr, stot * 1e3,
+                      color=CFG_COLORS[name], lw=2.5,
+                      label=CFG_SHORT[name].replace("\n", " "))
+            # Confusion floor
+            ax.axhline(sc * 1e3, color=CFG_COLORS[name],
+                       ls=":", lw=0.8, alpha=0.5)
+
+        # Annotate at 100h
+        ax.axvline(100, color="gray", ls="--", lw=1.2, label="100 h")
+        ax.set_xlabel("Integration time [h]", fontsize=11)
+        ax.set_title(f"{core_l} core — Total RMS Noise (30 MHz, 20 MHz BW)", fontsize=10)
+        ax.legend(fontsize=9); ax.grid(True, alpha=0.3, which="both")
+    axes[0].set_ylabel("Total RMS Noise [mJy]  (= √(σ²_th + σ²_c))", fontsize=11)
+    fig.suptitle("RMS Noise Level Comparison — All 6 Configurations\n"
+                 "Dotted = confusion floor per config",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(CMP_CMB, "rms_noise_comparison.png"), dpi=120)
+    plt.close()
+
+
+def cmp_cmb_uv(all_cfgs, uv_data):
+    """Combined UV coverage — 2×3 panel."""
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    axes = axes.ravel()
+    for ax, name in zip(axes, CFG_ORDER):
+        u_kl, v_kl, vis_hr = uv_data[name]
+        n_st = 1 + len(all_cfgs[name]["meta"]["out_centres"])
+        n_bl = n_st * (n_st - 1) // 2
+        ax.scatter(u_kl, v_kl, s=0.3, alpha=0.4, linewidths=0,
+                   c=CFG_COLORS[name])
+        ax.set_xlabel("u  [kλ]", fontsize=9)
+        ax.set_ylabel("v  [kλ]", fontsize=9)
+        ax.set_aspect("equal")
+        ax.axhline(0, color="gray", lw=0.4)
+        ax.axvline(0, color="gray", lw=0.4)
+        ax.grid(True, alpha=0.2)
+        for spine in ax.spines.values():
+            spine.set_edgecolor(CFG_COLORS[name]); spine.set_linewidth(2)
+        n_pts = len(u_kl) // 2
+        ax.set_title(f"{CFG_SHORT[name].replace(chr(10), ' ')}\n"
+                     f"{n_st} stations | {n_bl} baselines | {n_pts:,} UV pts",
+                     fontsize=8, color=CFG_COLORS[name], fontweight="bold")
+    fig.suptitle("UV Coverage Comparison — 100 Hours Observation  (30 MHz, 51 Peg b)\n"
+                 "Moon rotation fills the UV plane over time",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(CMP_CMB, "uv_coverage_comparison.png"), dpi=120)
+    plt.close()
+
+    # UV filling fraction bar chart
+    n_pts_all = {name: len(uv_data[name][0]) // 2 for name in CFG_ORDER}
+    fig2, ax2 = plt.subplots(figsize=(10, 5))
+    bars = ax2.bar(range(len(CFG_ORDER)),
+                   [n_pts_all[n] for n in CFG_ORDER],
+                   color=[CFG_COLORS[n] for n in CFG_ORDER],
+                   edgecolor="white", lw=0.5)
+    ax2.set_xticks(range(len(CFG_ORDER)))
+    ax2.set_xticklabels([CFG_SHORT[n].replace("\n", "\n") for n in CFG_ORDER],
+                         fontsize=9)
+    ax2.set_ylabel("UV points accumulated in 100 h", fontsize=10)
+    ax2.set_title("UV Coverage Richness — 100 h Observation at 30 MHz", fontsize=10)
+    for bar, n in zip(bars, CFG_ORDER):
+        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() * 1.02,
+                 f"{n_pts_all[n]:,}", ha="center", fontsize=8, fontweight="bold")
+    ax2.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(CMP_CMB, "uv_richness_bar.png"), dpi=120)
+    plt.close()
+
+
+def cmp_cmb_detections(all_cfgs, df_sens_new):
+    """Combined detection yield — grouped bars + best-band breakdown."""
+    n_feas, n_asp, feas_names_all = {}, {}, {}
+    for name in CFG_ORDER:
+        sub   = df_sens_new[df_sens_new["config_name"] == name]
+        best  = sub.groupby("target_name")["required_t_h"].min()
+        n_feas[name] = int((best < 100).sum())
+        n_asp[name]  = int(((best >= 100) & (best < 1000)).sum())
+        feas_names_all[name] = sorted(best[best < 100].index.tolist())
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+    # Stacked bar: feasible + aspirational
+    x   = np.arange(len(CFG_ORDER))
+    ax1 = axes[0]
+    fv  = [n_feas[n] for n in CFG_ORDER]
+    av  = [n_asp[n]  for n in CFG_ORDER]
+    b1  = ax1.bar(x, fv, color=[CFG_COLORS[n] for n in CFG_ORDER],
+                  edgecolor="white", label="Feasible (<100 h)")
+    b2  = ax1.bar(x, av, bottom=fv,
+                  color=[CFG_COLORS[n] for n in CFG_ORDER], alpha=0.4,
+                  hatch="//", edgecolor="white", label="Aspirational (100–1000 h)")
+    for i, (f, a) in enumerate(zip(fv, av)):
+        ax1.text(i, f + a + 0.2, str(f + a), ha="center",
+                 fontsize=10, fontweight="bold")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([CFG_SHORT[n] for n in CFG_ORDER], fontsize=9)
+    ax1.set_ylabel("Number of detectable targets", fontsize=10)
+    ax1.set_title("Total Detection Yield\n(solid = <100h feasible, hatched = 100–1000h)",
+                  fontsize=10)
+    ax1.legend(fontsize=9); ax1.grid(axis="y", alpha=0.3)
+
+    # Per-band breakdown (feasible only)
+    ax2 = axes[1]
+    bw = 0.12
+    band_colors = {"1-5":"#E53935","5-10":"#FB8C00","10-20":"#1E88E5","20-40":"#8E24AA"}
+    for bi, bl in enumerate(BAND_LABELS):
+        per_band = []
+        for name in CFG_ORDER:
+            sub = df_sens_new[(df_sens_new["config_name"] == name) &
+                               (df_sens_new["frequency_band"] == bl) &
+                               (df_sens_new["feasibility"] == "feasible")]
+            per_band.append(sub["target_name"].nunique())
+        offset = (bi - 1.5) * bw
+        ax2.bar(x + offset, per_band, bw, color=band_colors[bl],
+                label=f"{bl} MHz", edgecolor="white")
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([CFG_SHORT[n] for n in CFG_ORDER], fontsize=9)
+    ax2.set_ylabel("Feasible targets per band", fontsize=10)
+    ax2.set_title("Feasible Detections (<100 h) by Frequency Band", fontsize=10)
+    ax2.legend(fontsize=9); ax2.grid(axis="y", alpha=0.3)
+
+    fig.suptitle("Detection Yield Comparison — All 6 Configurations",
+                 fontsize=13, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(CMP_CMB, "detections_comparison.png"), dpi=120)
+    plt.close()
+    return n_feas, n_asp, feas_names_all
+
+
+# ── Summary table ─────────────────────────────────────────────────────────────
+
+def cmp_summary_table(all_cfgs, beam_metrics_list, uv_data, n_feas, n_asp,
+                      feas_names_all):
+    """Generate CSV + PNG summary table."""
+    rows = []
+    for name in CFG_ORDER:
+        cfg  = all_cfgs[name]
+        meta = cfg["meta"]
+        N    = meta["N_total"]
+        B_max = meta["B_max_m"]
+        mtr_entry = next((m for m in beam_metrics_list if m["config"] == name), {})
+        sc_ref   = confusion_limit_Jy(REF_FREQ, B_max)
+        st_ref   = sigma_thermal_Jy(N, REF_FREQ, REF_BW, 100.0)
+        stot_ref = np.sqrt(st_ref**2 + sc_ref**2)
+        u_kl, v_kl, vis_hr = uv_data[name]
+        n_uv = len(u_kl) // 2
+        rows.append(dict(
+            Config=CFG_SHORT[name].replace("\n", " "),
+            N_elements=N,
+            B_max_km=round(B_max / 1e3, 2),
+            HPBW_arcmin=round(mtr_entry.get("HPBW_arcmin", np.nan), 1),
+            MSL_dB=round(mtr_entry.get("MSL_dB", np.nan), 1),
+            sigma_th_100h_mJy=round(st_ref * 1e3, 5),
+            sigma_confusion_mJy=round(sc_ref * 1e3, 5),
+            sigma_total_100h_mJy=round(NSIGMA * stot_ref * 1e3, 5),
+            UV_points_100h=n_uv,
+            vis_hours=round(vis_hr, 1),
+            n_feasible=n_feas[name],
+            n_aspirational=n_asp[name],
+        ))
+    df = pd.DataFrame(rows)
+    df.to_csv(os.path.join(CMP_CSV, "summary_table.csv"), index=False)
+
+    # PNG table
+    fig, ax = plt.subplots(figsize=(20, 4))
+    ax.axis("off")
+    col_labels = list(df.columns)
+    cell_vals  = df.values.tolist()
+    tbl = ax.table(
+        cellText=cell_vals,
+        colLabels=col_labels,
+        cellLoc="center", loc="center",
+        bbox=[0, 0, 1, 1],
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(8)
+    for (r, c), cell in tbl.get_celld().items():
+        if r == 0:
+            cell.set_facecolor("#1976D2")
+            cell.set_text_props(color="white", fontweight="bold")
+        elif r % 2 == 0:
+            cell.set_facecolor("#f0f4ff")
+        # Highlight best config per column (rows 1-6)
+        cell.set_edgecolor("#cccccc")
+    plt.tight_layout()
+    plt.savefig(os.path.join(CMP_ROOT, "summary_table.png"),
+                dpi=130, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved summary_table.csv and summary_table.png")
+    return df
+
+
+# ── Interpretation and conclusion text ───────────────────────────────────────
+
+def _write_interpretation(df_sum, n_feas, uv_data, beam_mtr):
+    """Write interpretation.txt and final_conclusion.txt."""
+
+    best_sens = df_sum.loc[df_sum["sigma_total_100h_mJy"].idxmin(), "Config"]
+    best_beam_hpbw = df_sum.loc[df_sum["HPBW_arcmin"].idxmin(), "Config"]
+    best_beam_msl  = df_sum.loc[df_sum["MSL_dB"].idxmin(), "Config"]
+    best_rms  = df_sum.loc[df_sum["sigma_th_100h_mJy"].idxmin(), "Config"]
+    best_uv   = max(n_feas, key=lambda k: len(uv_data[k][0]))
+    best_det  = max(n_feas, key=n_feas.get)
+    best_det_n = n_feas[best_det]
+    best_det_label = CFG_SHORT[best_det].replace("\n", " ")
+
+    interp = f"""
+ALO ARRAY CONFIGURATION COMPARISON — INTERPRETATION
+=====================================================
+
+1. SENSITIVITY  (5σ limit at 30 MHz, 20 MHz BW, 100h integration)
+   Best: {best_sens}
+   • Sensitivity is set by the radiometer equation: σ_th ∝ 1/√(N(N−1)·Δν·t).
+     The two 128×128 core configs (C, D, F) vastly outperform the 32×32 configs
+     (A, B, E) because N(N−1) is ~256× larger.
+   • Within each core size the long-distance configs (B, D) have slightly lower
+     confusion floor (smaller HPBW → fewer background sources in the beam).
+   • Config D (Ring 128×128, long) and Config F (Cross 128×128) tie for best
+     thermal sensitivity; D has marginally lower confusion floor due to its
+     larger maximum baseline.
+
+2. BEAM-PATTERN QUALITY  (HPBW and MSL at 30 MHz)
+   Narrowest HPBW: {best_beam_hpbw}
+   Lowest MSL: {best_beam_msl}
+   • HPBW scales as λ/B_max; the long-distance configs (B, D) and the cross
+     configs (E, F) all achieve HPBW ≈ 63–75 arcmin at 30 MHz.
+   • The short-distance configs (A, C) have much wider beams (HPBW > 200 arcmin)
+     due to their shorter maximum baseline; they resolve fewer background sources
+     and suffer from higher confusion noise.
+   • The cross configs (E, F) have slightly higher sidelobe suppression than the
+     symmetric rings because the asymmetric arm lengths (N≤1km, E≤5km, S≤3km,
+     W≤3km) break the periodicity that causes coherent aliasing rings.
+
+3. RMS NOISE LEVEL  (thermal RMS at 30 MHz, 20 MHz BW, 100h)
+   Best: {best_rms}
+   • RMS noise is dominated by thermal noise, which follows σ_th = A/√t where
+     A = SEFD_elem / √(N_pol·N(N−1)·Δν).
+   • All 128×128 configs achieve σ_th < 0.01 mJy at 100h in the 20–40 MHz band.
+   • The 32×32 configs remain above 0.5 mJy even at 100h, making them
+     science-limited for all but the brightest targets.
+
+4. UV COVERAGE  (100 hours of observation, 30 MHz, 51 Peg b)
+   Most UV points: {CFG_SHORT[best_uv].replace(chr(10), " ")}
+   • The number of UV points scales as N_stations × (N_stations−1) × n_time_steps.
+   • Configs with more outrigger sub-arrays (all 6 new configs have 17 stations,
+     giving 272 unique baselines) fill the UV plane more richly than the old
+     single-outrigger designs (5 stations, 20 baselines).
+   • Long-distance configs (B, D) spread UV points to larger (u,v) radii,
+     providing higher angular resolution and better deconvolution capability.
+   • The cross configs (E, F) produce elongated UV tracks due to the asymmetric
+     arm lengths, giving anisotropic resolution that may be advantageous for
+     specific science targets.
+
+5. NUMBER OF DETECTIONS  (targets detectable in <100h)
+   Best: {best_det_label}  ({best_det_n} feasible targets)
+   • Detection yield is driven by: (a) collecting area N × A_eff,ele,
+     (b) maximum baseline B_max (determines confusion floor), and
+     (c) thermal sensitivity σ_th.
+   • All 128×128 configs achieve 24–33 feasible detections; 32×32 configs
+     achieve only 3 each regardless of outrigger distance.
+   • Config D (Ring 128×128, long) and Config F (Cross 128×128) tie at
+     33 feasible detections — the maximum achievable with the current
+     target catalogue and array sensitivity.
+   • The 20–40 MHz band provides the most detections because:
+     (i) predicted ECM fluxes are highest here, and
+     (ii) the sky temperature is lower than at lower frequencies.
+"""
+
+    conclusion = f"""
+FINAL CONCLUSION: BEST CONFIGURATION AND TRADE-OFFS
+====================================================
+
+OVERALL WINNER: Config D — Ring 128×128, long-distance
+  • N_elements = 16640  |  B_max = 10.98 km
+  • n_feasible detections = 33  (joint best with Config F)
+  • σ_th(100h, 20MHz BW, 30MHz) = {df_sum.loc[df_sum["Config"].str.contains("D:"), "sigma_th_100h_mJy"].values[0]:.5f} mJy
+  • σ_confusion(30MHz) = {df_sum.loc[df_sum["Config"].str.contains("D:"), "sigma_confusion_mJy"].values[0]:.5f} mJy
+  • HPBW ≈ {df_sum.loc[df_sum["Config"].str.contains("D:"), "HPBW_arcmin"].values[0]:.1f} arcmin  |  MSL ≈ {df_sum.loc[df_sum["Config"].str.contains("D:"), "MSL_dB"].values[0]:.1f} dB
+
+TRADE-OFFS BETWEEN ALL 6 CONFIGURATIONS:
+
+  Config A (Ring 32×32, short): Limited by small collecting area (N=1088).
+    Only 3 feasible targets. Beam too wide (HPBW > 500 arcmin) for sub-arcminute
+    science. Suitable only for very bright transient sources.
+
+  Config B (Ring 32×32, long): Same collecting area as A but better angular
+    resolution (HPBW ≈ 75 arcmin) and lower confusion. Still limited to 3
+    feasible targets. Useful as a cross-check or pathfinder array.
+
+  Config C (Ring 128×128, short): Much better sensitivity (N=16640) but
+    short baseline limits resolution (HPBW ≈ 250 arcmin) and raises confusion
+    noise significantly. 24 feasible targets. Good intermediate option if
+    outrigger deployment to 5 km is not feasible.
+
+  Config D (Ring 128×128, long): Best overall configuration.
+    Combines maximum collecting area with the longest maximum baseline
+    (10.98 km), giving minimum HPBW and minimum confusion.
+    33 feasible targets. Symmetric UV coverage aids image reconstruction.
+
+  Config E (Cross 32×32): Same element count as A/B but asymmetric
+    baselines. Detection yield identical (3 targets) — limited by collecting
+    area, not by geometry. Asymmetric UV coverage provides anisotropic resolution.
+
+  Config F (Cross 128×128): Ties Config D at 33 feasible detections.
+    B_max = 8.98 km vs 10.98 km for D, so slightly higher confusion floor
+    and wider HPBW. Asymmetric arm lengths suppress coherent aliasing,
+    giving better sidelobe characteristics. Preferred if sidelobe suppression
+    is a priority (e.g. bright RFI sources near targets of interest).
+
+RECOMMENDATION:
+  → Primary: Deploy Config D (Ring 128×128, long) for maximum science yield.
+  → If sidelobe contamination is a concern: use Config F (Cross 128×128) instead.
+  → Phase 1 pathfinder: Config C (Ring 128×128, short) if outrigger cable
+    runs beyond ~1.5 km are not feasible in early deployment stages.
+  → Do not deploy 32×32 configurations (A, B, E) as primary science arrays;
+    they lack the collecting area to achieve competitive sensitivity.
+"""
+
+    with open(os.path.join(CMP_ROOT, "interpretation.txt"), "w") as fh:
+        fh.write(interp)
+    with open(os.path.join(CMP_ROOT, "final_conclusion.txt"), "w") as fh:
+        fh.write(conclusion)
+    print(interp)
+    print(conclusion)
+
+
+# ── Master comparison runner ──────────────────────────────────────────────────
+
+def run_full_comparison(targets):
+    """
+    Generate the full 6-configuration comparison.
+    Saves all outputs under outputs/.../Comparison/.
+    """
+    print("\n" + "=" * 72)
+    print("  FULL COMPARISON: 6 CONFIGURATIONS (A–F)")
+    print("=" * 72)
+
+    # ── 1. Build / reuse the 6 new configs ──
+    all_cfgs = build_new_configs()
+
+    # ── 2. Compute AF for all 6 × 4 bands ──
+    print("\n── Computing array factor ──")
+    af_store = {}
+    for name, cfg in all_cfgs.items():
+        af_store[name] = {}
+        for bl, fc in zip(BAND_LABELS, BAND_CTR):
+            l, m, AF_dB, B_norm = compute_af(cfg["pos_enu"], cfg["meta"], fc, N_GRID)
+            af_store[name][bl] = (l, m, AF_dB, B_norm)
+    print("  Done.")
+
+    # ── 3. Sensitivity data ──
+    print("\n── Computing sensitivity ──")
+    df_sens = compute_new_sensitivity(all_cfgs, targets)
+
+    # ── 4. UV coverage for 100h ──
+    print("\n── Computing 100-h UV coverage (may take ~1 min) ──")
+    uv_data = {}
+    for name, cfg in all_cfgs.items():
+        u, v, vis = _uv_100h(cfg)
+        uv_data[name] = (u, v, vis)
+        n_st = 1 + len(cfg["meta"]["out_centres"])
+        print(f"  {name}: {vis:.0f} h visibility, {len(u)//2:,} UV points "
+              f"({n_st} stations)")
+
+    # ── 5. Separate plots per config ──
+    print("\n── Separate plots per configuration ──")
+    for name, cfg in all_cfgs.items():
+        df_cfg = df_sens[df_sens["config_name"] == name]
+        cmp_sep_sensitivity(name, cfg, df_cfg)
+        cmp_sep_beam(name, cfg, af_store[name])
+        cmp_sep_rms(name, cfg)
+        u, v, vis = uv_data[name]
+        cmp_sep_uv(name, cfg, u, v, vis)
+        cmp_sep_detections(name, cfg, df_cfg)
+        # Also generate schematic layout
+        plot_schematic_layout(name, cfg, savedir=_cmp_sep_dir(name))
+        print(f"  Config {cfg['meta']['cfg_id'].upper()}: "
+              f"layout + beam + UV + sensitivity + detections → separate/{name}/")
+
+    # ── 6. Combined comparison plots ──
+    print("\n── Combined comparison plots ──")
+    cmp_cmb_sensitivity(all_cfgs)
+    print("  Saved combined/sensitivity_comparison.png")
+
+    beam_mtr = cmp_cmb_beam(all_cfgs, af_store)
+    print("  Saved combined/beam_pattern_comparison.png + beam_1D_comparison.png")
+
+    cmp_cmb_rms(all_cfgs)
+    print("  Saved combined/rms_noise_comparison.png")
+
+    cmp_cmb_uv(all_cfgs, uv_data)
+    print("  Saved combined/uv_coverage_comparison.png + uv_richness_bar.png")
+
+    n_feas, n_asp, feas_names_all = cmp_cmb_detections(all_cfgs, df_sens)
+    print("  Saved combined/detections_comparison.png")
+
+    # ── 7. Summary table ──
+    print("\n── Summary table ──")
+    df_sum = cmp_summary_table(all_cfgs, beam_mtr, uv_data, n_feas, n_asp,
+                               feas_names_all)
+
+    # ── 8. Interpretation + conclusion ──
+    print("\n── Interpretation and conclusion ──")
+    _write_interpretation(df_sum, n_feas, uv_data, beam_mtr)
+    with open(os.path.join(CMP_ROOT, "feasible_targets_all_configs.txt"), "w") as fh:
+        fh.write("FEASIBLE TARGETS (<100h) — ALL 6 CONFIGURATIONS\n")
+        fh.write("=" * 60 + "\n\n")
+        for name in CFG_ORDER:
+            fh.write(f"\n{CFG_SHORT[name].replace(chr(10), ' ')}"
+                     f"  [{n_feas[name]} targets]\n")
+            fh.write("-" * 50 + "\n")
+            for t in feas_names_all[name]:
+                fh.write(f"  {t}\n")
+    print("  Saved feasible_targets_all_configs.txt")
+
+    print(f"\n  All outputs saved to: {CMP_ROOT}")
+    print("=" * 72)
+    return all_cfgs, af_store, df_sens, df_sum
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
@@ -4222,6 +5085,9 @@ def main():
     # ── SYMMETRIC CONFIG COMPARISON: old vs corrected ───────────────────────
     run_symmetric_comparison(configs, af_store, new_cfgs, af_new,
                              df_sens, df_sens_new, targets)
+
+    # ── FULL COMPARISON (A–F) ────────────────────────────────────────────────
+    run_full_comparison(targets)
 
     # ── ADVANCED ANALYSES ───────────────────────────────────────────────────
     run_weighted_beamforming(new_cfgs)
