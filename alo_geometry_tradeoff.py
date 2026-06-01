@@ -2463,6 +2463,123 @@ def _new_config_savedir(name):
     return d
 
 
+def plot_schematic_layout(name, cfg, savedir=None, return_fig=False):
+    """
+    Generate a schematic layout diagram matching the reference design images:
+      - White background
+      - Core drawn as a labelled rectangle (steelblue)
+      - Arm lines in steelblue
+      - Outrigger sub-arrays as small red-bordered rectangles
+      - Distance-from-edge labels in dark green
+      - Sub-array size labels in red
+    """
+    if savedir is None:
+        savedir = _new_config_savedir(name)
+    meta   = cfg["meta"]
+    core_n = meta["core_n"]
+    out_n  = meta["out_n"]
+    edge_m = core_edge_m(core_n)
+    B_max  = meta["B_max_m"]
+
+    use_km = B_max > 1500
+    scale  = 1e3 if use_km else 1.0
+    unit   = "km" if use_km else "m"
+
+    def fmt(d_m):
+        v = d_m / scale
+        if use_km:
+            return f"{v:.3g}km" if v != round(v) else f"{int(round(v))}km"
+        return f"{int(round(d_m))}m"
+
+    edge_s  = edge_m / scale
+
+    # Group outrigger centres by arm direction (snap to 0/90/180/270°)
+    arm_groups = {}
+    for cx, cy in meta["out_centres"]:
+        r   = np.hypot(cx, cy)
+        ang = round(np.degrees(np.arctan2(cy, cx)) / 90) * 90
+        ang = ang % 360
+        arm_groups.setdefault(ang, []).append((cx / scale, cy / scale, r))
+
+    max_reach_m = max(r for vals in arm_groups.values() for _, _, r in vals)
+    max_s       = max_reach_m / scale
+
+    # Display geometry
+    out_box = max_s * 0.035           # outrigger box half-size in display units
+    arm_lw  = 6
+    fig_w   = 13 if use_km else 11
+    fig_h   = 9  if use_km else 8
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor="#e8e8e8")
+    ax.set_facecolor("white")
+
+    # Draw arms + outrigger boxes
+    for ang_deg, olist in arm_groups.items():
+        ang_rad = np.radians(ang_deg)
+        dx, dy  = np.cos(ang_rad), np.sin(ang_rad)
+        olist_s = sorted(olist, key=lambda x: x[2])   # nearest → farthest
+        far_s   = olist_s[-1][2] / scale
+
+        # Arm line: from core edge to farthest outrigger centre
+        ax.plot([dx * edge_s, dx * far_s],
+                [dy * edge_s, dy * far_s],
+                color="steelblue", lw=arm_lw, zorder=2,
+                solid_capstyle="butt")
+
+        for cx_s, cy_s, r_m in olist_s:
+            # Outrigger box
+            rect = plt.Rectangle(
+                (cx_s - out_box, cy_s - out_box),
+                2 * out_box, 2 * out_box,
+                lw=2, edgecolor="#cc0000", facecolor="white", zorder=5
+            )
+            ax.add_patch(rect)
+
+            # Sub-array size label (red, beside box)
+            ax.text(cx_s + out_box * 1.2, cy_s,
+                    f"{out_n}×{out_n}",
+                    ha="left", va="center", fontsize=8,
+                    color="#cc0000", fontweight="bold", zorder=6)
+
+            # Distance-from-edge label (green, above box)
+            d_from_edge_m = r_m - edge_m
+            ax.text(cx_s, cy_s + out_box * 1.5,
+                    fmt(d_from_edge_m),
+                    ha="center", va="bottom", fontsize=8,
+                    color="darkgreen", fontweight="bold", zorder=6)
+
+    # Core rectangle
+    cr = plt.Rectangle((-edge_s, -edge_s), 2 * edge_s, 2 * edge_s,
+                        lw=2, edgecolor="steelblue", facecolor="#d0e8f8",
+                        zorder=4)
+    ax.add_patch(cr)
+    ax.text(0, 0, f"{core_n}×{core_n}",
+            ha="center", va="center", fontsize=13,
+            fontweight="bold", color="steelblue", zorder=7)
+
+    lim_x = max_s * 1.35
+    lim_y = max_s * 1.05
+    ax.set_xlim(-lim_x, lim_x)
+    ax.set_ylim(-lim_y, lim_y)
+    ax.set_xlabel(f"East  [{unit}]", fontsize=11)
+    ax.set_ylabel(f"North  [{unit}]", fontsize=11)
+    ax.set_aspect("equal")
+    ax.set_title(
+        f"{meta['label']}\n"
+        f"N_total = {meta['N_total']}  |  B_max = {meta['B_max_m']/1e3:.2f} km",
+        fontsize=10, fontweight="bold"
+    )
+    ax.grid(True, alpha=0.2)
+    plt.tight_layout()
+
+    fpath = os.path.join(savedir, "layout_schematic.png")
+    plt.savefig(fpath, dpi=130, bbox_inches="tight", facecolor="white")
+    if return_fig:
+        return fig, ax
+    plt.close()
+    return fpath
+
+
 def plot_new_layout(name, cfg):
     """Separate array geometry plot for one new configuration."""
     savedir = _new_config_savedir(name)
@@ -2512,6 +2629,9 @@ def plot_new_layout(name, cfg):
     plt.tight_layout()
     plt.savefig(os.path.join(savedir, "layout.png"), dpi=100)
     plt.close()
+
+    # Also save the reference-image-style schematic
+    plot_schematic_layout(name, cfg, savedir=savedir)
 
 
 def plot_new_beam(name, cfg, af_data):
@@ -2720,6 +2840,338 @@ def compute_new_sensitivity(configs, targets):
     df.to_csv(os.path.join(NEW_CSV, "new_configs_sensitivity.csv"), index=False)
     print(f"  Saved new_configs_sensitivity.csv  ({len(df)} rows)")
     return df
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SYMMETRIC CONFIGURATION COMPARISON: OLD vs CORRECTED
+# Explains exactly what was wrong with the original "ring" configurations and
+# quantifies how the corrected geometry changes the results.
+# ══════════════════════════════════════════════════════════════════════════════
+
+SYMCOMP_PLOT = os.path.join(GT_PLOT, "symmetric_comparison")
+os.makedirs(SYMCOMP_PLOT, exist_ok=True)
+
+_WHAT_WAS_WRONG = """
+WHAT WAS WRONG WITH THE PREVIOUS SYMMETRIC CONFIGURATIONS
+==========================================================
+
+Original "ring" configs (ring_core32x32_1.0km etc.):
+  × Distance measured from the CENTER of the core, not from the EDGE
+  × Only ONE outrigger sub-array per arm (4 sub-arrays total)
+  × Large sub-array size: 4×4=16 elem (32×32 core), 16×16=256 elem (128×128 core)
+  × Result: all 4 baselines identical → single sidelobe ring, no UV-coverage spread
+
+Corrected symmetric configs (A–D, matching reference images):
+  ✓ Distance measured from the EDGE (farthest element) of the core
+  ✓ FOUR outrigger sub-arrays per arm (16 sub-arrays total)
+  ✓ Smaller sub-array size: 2×2=4 elem (32×32 core), 4×4=16 elem (128×128 core)
+  ✓ Result: 4 distinct baseline lengths per arm → richer UV coverage,
+            multiple sidelobe rings at different angular scales
+
+Key numerical differences for the 32×32 case (approx. 1 km baseline):
+  Old: 4 × 16-element clusters at 1000 m from centre → 64 outrigger elements, 1 baseline length
+  New: 16 × 4-element clusters at 330/580/830/1080 m from centre → 64 outrigger elements, 4 baselines
+  → Same total element count and collecting area, but richer UV coverage
+
+Key numerical differences for the 128×128 case (approx. 5 km baseline):
+  Old: 4 × 256-element clusters → 1024 outrigger elements, total N=17408
+  New: 16 × 16-element clusters →  256 outrigger elements, total N=16640
+  → Fewer outrigger elements, but 4× more distinct baselines per arm
+"""
+
+
+def run_symmetric_comparison(old_configs, af_store_old, new_cfgs, af_new,
+                              df_sens_old, df_sens_new, targets):
+    """
+    Comprehensive comparison of old (incorrect) vs new (corrected) symmetric configs.
+
+    Outputs
+    -------
+    symmetric_comparison/schematic_comparison_32x32.png  — side-by-side layouts
+    symmetric_comparison/schematic_comparison_128x128.png
+    symmetric_comparison/beam_comparison_30MHz.png       — AF side by side
+    symmetric_comparison/uv_comparison.png               — UV coverage
+    symmetric_comparison/sensitivity_comparison.png      — σ vs t
+    symmetric_comparison/detection_comparison.png        — detection yield
+    symmetric_comparison/what_changed.txt                — text summary
+    """
+    print("\n" + "=" * 72)
+    print("  SYMMETRIC CONFIGURATION COMPARISON: OLD vs CORRECTED")
+    print("=" * 72)
+    print(_WHAT_WAS_WRONG)
+
+    # Save text summary
+    with open(os.path.join(SYMCOMP_PLOT, "what_changed.txt"), "w") as fh:
+        fh.write(_WHAT_WAS_WRONG)
+
+    # Pairs to compare (old_key, new_key, label)
+    pairs = [
+        ("ring_core32x32_1.0km",    "ring_a_c32x32_out2x2_short",
+         "32×32 core, ~1 km baseline\n(short-distance case)"),
+        ("ring_core32x32_5.0km",    "ring_b_c32x32_out2x2_long",
+         "32×32 core, ~5 km baseline\n(long-distance case)"),
+        ("ring_core128x128_1.0km",  "ring_c_c128x128_out4x4_short",
+         "128×128 core, ~1 km baseline\n(short-distance case)"),
+        ("ring_core128x128_5.0km",  "ring_d_c128x128_out4x4_long",
+         "128×128 core, ~5 km baseline\n(long-distance case)"),
+    ]
+
+    # ── A: Schematic layout comparison ───────────────────────────────────────
+    for core_n, pair_subset in [(32, pairs[:2]), (128, pairs[2:])]:
+        fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+        fig.suptitle(f"Symmetric Configuration: Old (incorrect) vs Corrected  "
+                     f"—  {core_n}×{core_n} core\n"
+                     f"Left: old design (1 outrigger/arm, from centre)  |  "
+                     f"Right: corrected design (4 outriggers/arm, from edge)",
+                     fontsize=11, fontweight="bold")
+
+        for ri, (ok, nk, lbl) in enumerate(pair_subset):
+            # ── Old layout ──
+            ax_old = axes[ri, 0]
+            old_pos  = old_configs[ok]["pos_enu"]
+            old_meta = old_configs[ok]["meta"]
+            old_Nc   = old_meta["N_core"]
+            old_dist = old_meta["dist_km"] * 1e3   # from centre [m]
+            out_n_old = old_meta["out_n"]
+
+            sc = 1e3 if old_meta["B_max_m"] > 1500 else 1.0
+            unit_old = "km" if sc == 1e3 else "m"
+            ax_old.scatter(old_pos[:old_Nc, 0]/sc, old_pos[:old_Nc, 1]/sc,
+                           s=0.5 if core_n == 128 else 2, c="steelblue", alpha=0.6)
+            ax_old.scatter(old_pos[old_Nc:, 0]/sc, old_pos[old_Nc:, 1]/sc,
+                           s=6, c="tomato", alpha=0.9)
+            for cx, cy in old_meta["out_centres"]:
+                ax_old.plot(cx/sc, cy/sc, "r+", ms=10, mew=2)
+            ax_old.set_aspect("equal"); ax_old.grid(True, alpha=0.2)
+            ax_old.set_xlabel(f"East [{unit_old}]", fontsize=9)
+            ax_old.set_ylabel(f"North [{unit_old}]", fontsize=9)
+            ax_old.set_title(f"OLD: {ok}\n"
+                              f"N={old_meta['N_total']}, "
+                              f"4×{out_n_old}×{out_n_old} outriggers, "
+                              f"dist from CENTRE={old_meta['dist_km']} km",
+                              fontsize=8, color="tomato")
+
+            # ── New layout ──
+            ax_new = axes[ri, 1]
+            new_pos  = new_cfgs[nk]["pos_enu"]
+            new_meta = new_cfgs[nk]["meta"]
+            new_Nc   = new_meta["N_core"]
+            out_n_new = new_meta["out_n"]
+
+            sc2    = 1e3 if new_meta["B_max_m"] > 1500 else 1.0
+            unit_n = "km" if sc2 == 1e3 else "m"
+            ax_new.scatter(new_pos[:new_Nc, 0]/sc2, new_pos[:new_Nc, 1]/sc2,
+                           s=0.5 if core_n == 128 else 2, c="steelblue", alpha=0.6)
+            ax_new.scatter(new_pos[new_Nc:, 0]/sc2, new_pos[new_Nc:, 1]/sc2,
+                           s=6, c="tomato", alpha=0.9)
+            for cx, cy in new_meta["out_centres"]:
+                ax_new.plot(cx/sc2, cy/sc2, "r+", ms=6, mew=1.5)
+            ax_new.set_aspect("equal"); ax_new.grid(True, alpha=0.2)
+            ax_new.set_xlabel(f"East [{unit_n}]", fontsize=9)
+            ax_new.set_ylabel(f"North [{unit_n}]", fontsize=9)
+            ax_new.set_title(f"CORRECTED: Config {new_meta['cfg_id'].upper()}\n"
+                              f"N={new_meta['N_total']}, "
+                              f"16×{out_n_new}×{out_n_new} outriggers, "
+                              f"dist from EDGE",
+                              fontsize=8, color="steelblue")
+
+        plt.tight_layout()
+        fname = f"schematic_comparison_{core_n}x{core_n}.png"
+        fig.savefig(os.path.join(SYMCOMP_PLOT, fname), dpi=120)
+        plt.close(fig)
+        print(f"  Saved {fname}")
+
+    # ── B: Beam pattern comparison at 30 MHz ─────────────────────────────────
+    ref_bl = "20-40"
+    fig, axes = plt.subplots(2, 4, figsize=(20, 10))
+    fig.suptitle("Beam Pattern Comparison at 30 MHz: Old vs Corrected Symmetric Configs\n"
+                 "Rows: 32×32 (top), 128×128 (bottom)  |  "
+                 "Cols: old@1km | new@~1km | old@5km | new@~5km",
+                 fontsize=11, fontweight="bold")
+    old_new_order = [
+        ("ring_core32x32_1.0km",   "ring_a_c32x32_out2x2_short"),
+        ("ring_core32x32_5.0km",   "ring_b_c32x32_out2x2_long"),
+        ("ring_core128x128_1.0km", "ring_c_c128x128_out4x4_short"),
+        ("ring_core128x128_5.0km", "ring_d_c128x128_out4x4_long"),
+    ]
+    col_titles = ["Old 1km", "New ~1km", "Old 5km", "New ~5km"]
+    for ri, core_n_s in enumerate([32, 128]):
+        for ci, (ok, nk) in enumerate([(old_new_order[ri*2][0], old_new_order[ri*2][1]),
+                                        (old_new_order[ri*2+1][0], old_new_order[ri*2+1][1])]):
+            for si, (key, store, clr) in enumerate([(ok, af_store_old, "old"),
+                                                     (nk, af_new,       "new")]):
+                ax  = axes[ri, ci * 2 + si]
+                l, m, AF_dB, B_n = store[key][ref_bl]
+                ax.pcolormesh(l, m, AF_dB, vmin=-30, vmax=0,
+                              cmap="inferno", shading="auto")
+                ax.set_aspect("equal"); ax.tick_params(labelsize=6)
+                border = "tomato" if clr == "old" else "steelblue"
+                for spine in ax.spines.values():
+                    spine.set_edgecolor(border); spine.set_linewidth(2)
+                tag = "OLD" if clr == "old" else "CORR"
+                ax.set_title(f"{tag}: {key.split('_')[0]}\n"
+                             f"N={store[key][ref_bl][0].shape[0]}",
+                             fontsize=7,
+                             color="tomato" if clr == "old" else "steelblue")
+        # Column titles
+        if ri == 0:
+            for ci2, ct in enumerate(col_titles):
+                axes[ri, ci2].text(0.5, 1.15, ct,
+                                   transform=axes[ri, ci2].transAxes,
+                                   ha="center", fontsize=9, fontweight="bold")
+
+    plt.tight_layout()
+    fig.savefig(os.path.join(SYMCOMP_PLOT, "beam_comparison_30MHz.png"), dpi=120)
+    plt.close(fig)
+    print("  Saved beam_comparison_30MHz.png")
+
+    # ── C: UV coverage comparison ─────────────────────────────────────────────
+    comp_pairs_uv = [
+        ("ring_core128x128_1.0km", old_configs, "Old: 128×128 + 1km (centre)"),
+        ("ring_c_c128x128_out4x4_short", new_cfgs, "New: Config C (4/arm, edge)"),
+        ("ring_core128x128_5.0km", old_configs, "Old: 128×128 + 5km (centre)"),
+        ("ring_d_c128x128_out4x4_long",  new_cfgs, "New: Config D (4/arm, edge)"),
+    ]
+    fig, axes = plt.subplots(1, 4, figsize=(22, 6))
+    for ax, (key, store, lbl) in zip(axes, comp_pairs_uv):
+        sxy = np.array([(0.0, 0.0)] +
+                       [(cx, cy) for cx, cy in store[key]["meta"]["out_centres"]])
+        for bl, ch in SUBBAND_CH.items():
+            u, v = _uv_from_stations(sxy, ch)
+            ax.scatter(u/1e3, v/1e3, s=4, alpha=0.7,
+                       color=SUBBAND_CH_COLOR[bl], linewidths=0,
+                       label=f"{bl} MHz")
+        ax.set_xlabel("u [kλ]"); ax.set_ylabel("v [kλ]")
+        ax.set_title(lbl, fontsize=8, fontweight="bold")
+        ax.set_aspect("equal")
+        ax.axhline(0, color="gray", lw=0.4); ax.axvline(0, color="gray", lw=0.4)
+        ax.grid(True, alpha=0.2)
+        n_stations = len(sxy)
+        ax.text(0.02, 0.98, f"{n_stations} stations",
+                transform=ax.transAxes, fontsize=8, va="top")
+    axes[0].legend(fontsize=7, markerscale=3)
+    fig.suptitle("UV Coverage: Old vs Corrected Symmetric Configs  (128×128 core)\n"
+                 "Old = 5 stations (core + 4 outriggers)  |  "
+                 "New = 17 stations (core + 16 outriggers)",
+                 fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    fig.savefig(os.path.join(SYMCOMP_PLOT, "uv_comparison.png"), dpi=120)
+    plt.close(fig)
+    print("  Saved uv_comparison.png")
+
+    # ── D: Sensitivity vs time comparison ─────────────────────────────────────
+    t_arr = np.logspace(-2, 4, 400)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+    comp_pairs_sens = [
+        [("ring_core32x32_1.0km", old_configs,
+          "Old 32×32 @1km", "tomato", "-"),
+         ("ring_a_c32x32_out2x2_short", new_cfgs,
+          "New 32×32 (A)", "steelblue", "-"),
+         ("ring_core32x32_5.0km", old_configs,
+          "Old 32×32 @5km", "tomato", "--"),
+         ("ring_b_c32x32_out2x2_long", new_cfgs,
+          "New 32×32 (B)", "steelblue", "--")],
+        [("ring_core128x128_1.0km", old_configs,
+          "Old 128×128 @1km", "tomato", "-"),
+         ("ring_c_c128x128_out4x4_short", new_cfgs,
+          "New 128×128 (C)", "steelblue", "-"),
+         ("ring_core128x128_5.0km", old_configs,
+          "Old 128×128 @5km", "tomato", "--"),
+         ("ring_d_c128x128_out4x4_long", new_cfgs,
+          "New 128×128 (D)", "steelblue", "--")],
+    ]
+    for ax, cset, core_n_s in zip(axes, comp_pairs_sens, [32, 128]):
+        for key, store, lbl, col, ls in cset:
+            meta  = store[key]["meta"]
+            N     = meta["N_total"]
+            B_max = meta["B_max_m"]
+            sc    = confusion_limit_Jy(REF_FREQ, B_max)
+            st1   = sigma_thermal_Jy(N, REF_FREQ, REF_BW, 1.0)
+            stot  = np.sqrt((st1 / np.sqrt(t_arr)) ** 2 + sc ** 2)
+            ax.loglog(t_arr, NSIGMA * stot * 1e3, color=col, ls=ls, lw=2,
+                      label=lbl)
+        ax.set_xlabel("Integration time [h]", fontsize=10)
+        ax.set_title(f"{core_n_s}×{core_n_s} core — Old vs Corrected",
+                     fontsize=10)
+        ax.legend(fontsize=8); ax.grid(True, alpha=0.3, which="both")
+    axes[0].set_ylabel("5σ Sensitivity [mJy]  (30 MHz, 20 MHz BW)", fontsize=10)
+    fig.suptitle("Sensitivity vs Integration Time: Old vs Corrected Symmetric Configs",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    fig.savefig(os.path.join(SYMCOMP_PLOT, "sensitivity_comparison.png"), dpi=120)
+    plt.close(fig)
+    print("  Saved sensitivity_comparison.png")
+
+    # ── E: Detection yield comparison ─────────────────────────────────────────
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    comp_pairs_det = [
+        ("ring_core32x32_1.0km",   "ring_a_c32x32_out2x2_short"),
+        ("ring_core32x32_5.0km",   "ring_b_c32x32_out2x2_long"),
+        ("ring_core128x128_1.0km", "ring_c_c128x128_out4x4_short"),
+        ("ring_core128x128_5.0km", "ring_d_c128x128_out4x4_long"),
+    ]
+    xlabels     = ["32×32\n@1km", "32×32\n@5km", "128×128\n@1km", "128×128\n@5km"]
+    x_pos       = np.arange(len(comp_pairs_det))
+    bar_w       = 0.35
+
+    n_feas_old, n_feas_new = [], []
+    for ok, nk in comp_pairs_det:
+        sub_o = df_sens_old[df_sens_old["config_name"] == ok]
+        best_o = sub_o.groupby("target_name")["required_t_h"].min()
+        n_feas_old.append(int((best_o < 100).sum()))
+
+        sub_n = df_sens_new[df_sens_new["config_name"] == nk]
+        best_n = sub_n.groupby("target_name")["required_t_h"].min()
+        n_feas_new.append(int((best_n < 100).sum()))
+
+    for ax, (nf_o, nf_n) in zip(axes, [(n_feas_old[:2], n_feas_new[:2]),
+                                         (n_feas_old[2:], n_feas_new[2:])]):
+        xl  = xlabels[:2] if ax is axes[0] else xlabels[2:]
+        xp  = np.arange(len(xl))
+        b1  = ax.bar(xp - bar_w/2, nf_o, bar_w, color="tomato", alpha=0.85,
+                     edgecolor="white", label="Old (1 outrigger/arm, from centre)")
+        b2  = ax.bar(xp + bar_w/2, nf_n, bar_w, color="steelblue", alpha=0.85,
+                     edgecolor="white", label="Corrected (4 outriggers/arm, from edge)")
+        for b, n in zip(list(b1) + list(b2), list(nf_o) + list(nf_n)):
+            ax.text(b.get_x() + b.get_width()/2, b.get_height() + 0.2,
+                    str(n), ha="center", fontsize=10, fontweight="bold")
+        ax.set_xticks(xp)
+        ax.set_xticklabels(xl, fontsize=10)
+        ax.set_ylabel("Feasible detections (t < 100 h)", fontsize=10)
+        ax.legend(fontsize=9); ax.grid(axis="y", alpha=0.3)
+        core_s = "32×32" if ax is axes[0] else "128×128"
+        ax.set_title(f"{core_s} core — Detection Yield Comparison", fontsize=10)
+
+    fig.suptitle("Detection Yield: Old vs Corrected Symmetric Configurations\n"
+                 "Red = old design  |  Blue = corrected design",
+                 fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    fig.savefig(os.path.join(SYMCOMP_PLOT, "detection_comparison.png"), dpi=120)
+    plt.close(fig)
+    print("  Saved detection_comparison.png")
+
+    # ── F: Quantitative summary table ─────────────────────────────────────────
+    print("\n  ┌─────────────────────────────────────────────────────────────────────────────────┐")
+    print("  │  QUANTITATIVE COMPARISON: OLD vs CORRECTED SYMMETRIC CONFIGS                   │")
+    print("  ├─────────────┬───────────┬──────────┬───────────┬──────────┬────────────────────┤")
+    print("  │ Config pair │ N (old)   │ N (new)  │ B_max(old)│ B_max(n) │ n_det<100h(old/new)│")
+    print("  ├─────────────┼───────────┼──────────┼───────────┼──────────┼────────────────────┤")
+    for (ok, nk, lbl), nfo, nfn in zip(pairs, n_feas_old, n_feas_new):
+        om = old_configs[ok]["meta"]
+        nm = new_cfgs[nk]["meta"]
+        short = lbl.split("\n")[0]
+        print(f"  │ {short:12s}│ {om['N_total']:9d}│ {nm['N_total']:8d}│"
+              f" {om['B_max_m']/1e3:8.2f} km│ {nm['B_max_m']/1e3:7.2f} km│"
+              f" {nfo:9d} / {nfn:8d}     │")
+    print("  └─────────────┴───────────┴──────────┴───────────┴──────────┴────────────────────┘")
+
+    print("\n  KEY CHANGES IN RESULTS:")
+    print("  • 32×32 configs: N_total unchanged (1088); B_max slightly larger (edge vs centre);")
+    print("    4× more distinct baselines → richer UV coverage")
+    print("  • 128×128 configs: N_total smaller (16640 vs 17408); smaller outrigger sub-arrays")
+    print("    (4×4=16 vs 16×16=256 elem each) but 4× more baselines; comparable sensitivity")
+    print("  • Detection yield: numbers reflect the corrected A_eff=6.28 m² and edge-based distances")
+    print(f"  Outputs saved to: {SYMCOMP_PLOT}")
 
 
 def run_new_configs_analysis(targets):
@@ -3766,6 +4218,10 @@ def main():
 
     # ── NEW CONFIGURATIONS (a–f) ────────────────────────────────────────────
     new_cfgs, af_new, df_sens_new, df_sum_new = run_new_configs_analysis(targets)
+
+    # ── SYMMETRIC CONFIG COMPARISON: old vs corrected ───────────────────────
+    run_symmetric_comparison(configs, af_store, new_cfgs, af_new,
+                             df_sens, df_sens_new, targets)
 
     # ── ADVANCED ANALYSES ───────────────────────────────────────────────────
     run_weighted_beamforming(new_cfgs)
