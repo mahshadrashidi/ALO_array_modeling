@@ -1,0 +1,56 @@
+Rank 5: asym_no6_sh500_lo7000_int1000
+============================================================
+
+FEASIBLE (<100h):
+  55 Cnc b
+  HAT-P-21 b
+  HAT-P-22 b
+  HAT-P-49 b
+  HAT-P-57 b
+  HAT-P-7 b
+  HD 189733 b
+  HD 202772 A b
+  HD 38529 b
+  HIP 67522 b
+  K2-237 b
+  KELT-2 A b
+  KELT-7 b
+  TOI-1107 b
+  TOI-1333 b
+  TOI-2152 b
+  TOI-3331 b
+  TOI-3540 b
+  TOI-431 c
+  TOI-559 b
+  TOI-778 b
+  WASP-10 b
+  WASP-111 b
+  WASP-114 b
+  WASP-178 b
+  WASP-186 b
+  WASP-4 b
+  WASP-5 b
+  WASP-66 b
+  WASP-76 b
+  WASP-82 b
+  rho CrB b
+  ups And b
+
+ASPIRATIONAL (100–1000h):
+  51 Peg b
+  CoRoT-1 b
+  HAT-P-8 b
+  HD 118203 b
+  KELT-17 b
+  KELT-18 b
+  KELT-3 b
+  KELT-4 A b
+  TOI-1408 b
+  TOI-1820 b
+  TOI-2193 b
+  TOI-564 b
+  TrES-5 b
+  WASP-104 b
+  WASP-130 b
+  WASP-74 b
+  WASP-93 b

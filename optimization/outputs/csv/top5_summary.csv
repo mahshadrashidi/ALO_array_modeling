@@ -1,0 +1,6 @@
+Rank,cfg_id,Geometry,N_o,N_total,B_max_km,F_score,n_det_low_1_10MHz,n_det_all_bands,sigma_total_mJy,MSL_dB,HPBW_arcmin,UV_pts_100h
+1,asym_no6_sh500_lo10000_int1000,asymmetric,6,16960,11.98,0.8709,2,34,9.53294,-4.4,250.3,27200
+2,asym_no6_sh1000_lo10000_int1000,asymmetric,6,16960,11.98,0.8564,2,34,9.53294,-4.4,251.0,27200
+3,asym_no6_sh250_lo10000_int1000,asymmetric,6,16960,11.98,0.8558,2,34,9.53294,-4.4,250.0,27200
+4,asym_no6_sh2000_lo10000_int1000,asymmetric,6,16960,11.98,0.8234,2,34,9.53294,-4.3,252.0,27200
+5,asym_no6_sh500_lo7000_int1000,asymmetric,6,16960,8.98,0.8228,2,33,9.53329,-4.4,250.3,27200

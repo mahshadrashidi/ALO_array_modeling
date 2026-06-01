@@ -27,3 +27,7 @@ Thumbs.db
 
 # Data files that should not be versioned (add the CSV explicitly if desired)
 # *.csv
+
+# Optimization outputs are tracked explicitly
+!optimization/outputs/
+!optimization/outputs/**

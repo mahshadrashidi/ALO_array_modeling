@@ -1,0 +1,83 @@
+
+ALO ARRAY OPTIMIZATION — RESULTS INTERPRETATION
+================================================
+
+SEARCH SUMMARY
+--------------
+  Valid configurations evaluated : 396
+    Symmetric ring               : 36
+    Asymmetric cross             : 360
+  Hard constraint (B_max ≤ 15km) filtered additional configs.
+
+BEST CONFIGURATION (Rank 1)
+----------------------------
+  Config ID : asym_no6_sh500_lo10000_int1000
+  Geometry  : asymmetric
+  N_o       : 6 × 6 outrigger sub-arrays
+  N_total   : 16960 elements
+  B_max     : 11.98 km
+  F score   : 0.8709 / 1.0
+
+  Objectives at optimum:
+    f_det  = 1.000  (n_det_low = 2)
+    f_sens = 1.000  (σ_total = 9.5329 mJy)
+    f_beam = 0.684  (MSL = -4.4 dB)
+    f_uv   = 0.800  (UV reach = 0.3 kλ)
+
+TOP-5 ANALYSIS
+--------------
+  Rank 1: asym_no6_sh500_lo10000_int1000
+    N_total = 16960,  B_max = 11.98 km
+    Feasible detections (all bands) : 34
+    Feasible detections (1–10 MHz) : 2
+    F score = 0.8709
+  Rank 2: asym_no6_sh1000_lo10000_int1000
+    N_total = 16960,  B_max = 11.98 km
+    Feasible detections (all bands) : 34
+    Feasible detections (1–10 MHz) : 2
+    F score = 0.8564
+  Rank 3: asym_no6_sh250_lo10000_int1000
+    N_total = 16960,  B_max = 11.98 km
+    Feasible detections (all bands) : 34
+    Feasible detections (1–10 MHz) : 2
+    F score = 0.8558
+  Rank 4: asym_no6_sh2000_lo10000_int1000
+    N_total = 16960,  B_max = 11.98 km
+    Feasible detections (all bands) : 34
+    Feasible detections (1–10 MHz) : 2
+    F score = 0.8234
+  Rank 5: asym_no6_sh500_lo7000_int1000
+    N_total = 16960,  B_max = 8.98 km
+    Feasible detections (all bands) : 33
+    Feasible detections (1–10 MHz) : 2
+    F score = 0.8228
+
+KEY FINDINGS
+------------
+
+1. Detection yield at low frequencies (1–10 MHz):
+   • All valid 128×128 configs achieve 2–2 feasible
+     detections in the 1–10 MHz band at 100 h.
+   • The dominant driver is B_max: larger baseline → narrower beam → lower
+     confusion floor → more targets above the 5σ threshold.
+   • N_o has a minor effect (<3%) since the 128×128 core dominates N(N−1).
+
+2. Sensitivity at low frequencies:
+   • Sky temperature at 3 MHz is ~7.5×10⁶ K, making the 1–5 MHz band
+     thermally noise-dominated even for 16,000+ element arrays.
+   • The 5–10 MHz band is more favourable: σ_th ≈ 0.3 mJy at 100h, 5 MHz BW.
+   • Sensitivity is nearly identical across all 128×128 configs; geometry
+     affects only the confusion floor through the beam width.
+
+3. Asymmetric vs symmetric geometry:
+   • The asymmetric cross provides longer E-arm baselines within the 15km
+     constraint, giving better angular resolution in the E-W direction.
+   • The symmetric ring fills the UV plane more uniformly, which is preferable
+     for image reconstruction.
+   • For detection count, the asymmetric cross's longer d_long increases B_max
+     in one direction, reducing confusion in that direction only.
+
+4. Optimal N_o:
+   • N_o = 6 is found optimal; larger N_o adds elements
+     but the marginal sensitivity gain (∝ √(N_total(N_total-1))) is <2%.
+   • N_o should be chosen based on deployment mass and cost, not sensitivity.

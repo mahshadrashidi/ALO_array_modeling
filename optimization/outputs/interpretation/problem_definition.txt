@@ -1,0 +1,71 @@
+
+ALO ARRAY CONFIGURATION — OPTIMIZATION PROBLEM DEFINITION
+==========================================================
+
+CONTEXT
+-------
+This document defines the multi-objective optimization applied to the ALO
+(Array on the Lunar Outpost) array configuration study, focusing specifically
+on the 1–10 MHz frequency range where ECM (electron-cyclotron maser) emission
+from close-in exoplanets is predicted.
+
+DECISION VARIABLES
+------------------
+  1. N_o  ∈ {1, 2, 3, 4, 5, 6}
+     Outrigger sub-array side length (total outrigger elements = N_o² per sub-array).
+
+  2. Arm geometry:
+       • 'symmetric'  — all 4 arms (N/E/S/W) have equal spacing to d_max
+       • 'asymmetric' — 4 arms with distinct spacings:
+           N arm = short  (d_short ∈ {250, 500, 1000, 2000} m from edge)
+           E arm = long   (d_long  ∈ {3000, 5000, 7000, 10000} m from edge)
+           S arm = int.   (d_int   ∈ {1000, 2000, 3000, 5000} m from edge)
+           W arm = int.   (same as S arm)
+
+  3. d_max [symmetric] ∈ {500, 1000, 2000, 3000, 5000, 7000} m from core edge.
+     Each arm has 4 outriggers equally spaced to d_max.
+
+FIXED PARAMETERS
+----------------
+  Core size       : 128 × 128 dipoles
+  Core spacing    : d = 5.15 m  →  core edge at (128−1)/2 × 5.15 = 327.0 m
+  N_arms          : 4  (North, East, South, West)
+  N_out_per_arm   : 4  outrigger sub-arrays per arm, equally spaced to d_max
+  A_eff,ele       : 6.28 m²  (constant per element)
+  Integration time: 100 h (reference)
+  Target source   : 51 Peg b  (RA=344.4°, Dec=+20.5°)
+
+OBJECTIVE FUNCTION  (equal weights, 0.25 each)
+---------------------------------------------
+  F = 0.25 · f_det + 0.25 · f_sens + 0.25 · f_beam + 0.25 · f_uv
+
+  f_det  = n_det(1–10 MHz, t<100h) / n_det_max          [maximise]
+  f_sens = (σ_max − σ_total) / (σ_max − σ_min)          [minimise σ]
+  f_beam = (MSL − MSL_worst) / (MSL_best − MSL_worst)   [minimise MSL]
+  f_uv   = B_max / λ₇.₅MHz / (B_max/λ)_max             [maximise]
+
+  where σ_total = √(σ_th² + σ_c²)  at 7.5 MHz, 5 MHz BW, 100 h.
+
+HARD CONSTRAINT
+---------------
+  B_max ≤ 15 km  (limits cable runs and deployment footprint)
+
+SEARCH STRATEGY
+---------------
+  Full grid search over all parameter combinations.
+  Beam quality computed at N_GRID = 128 (speed);
+  detailed analysis at N_GRID = 512 for top-5 configs.
+  Pareto front computed in (n_det, σ_total) space.
+
+OUTPUT METRICS
+--------------
+  For every valid configuration:
+    N_total, B_max, σ_th, σ_c, σ_total, n_det(1–10 MHz),
+    MSL [dB], HPBW [arcmin], UV reach [kλ], F_score
+
+  For top-5 configurations (detailed):
+    Full beam patterns at all 4 sub-bands
+    Sensitivity curves per band
+    RMS noise vs time
+    UV coverage after 100 h (7.5 MHz, 51 Peg b)
+    Per-band detection count + target list
