@@ -1,4 +1,4 @@
-Rank 5: asym_no6_sh500_lo7000_int1000
+Rank 5: asym_sh500_lo8000_int500
 ============================================================
 
 FEASIBLE (<100h):
@@ -40,6 +40,7 @@ ASPIRATIONAL (100–1000h):
   51 Peg b
   CoRoT-1 b
   HAT-P-8 b
+  HATS-35 b
   HD 118203 b
   KELT-17 b
   KELT-18 b

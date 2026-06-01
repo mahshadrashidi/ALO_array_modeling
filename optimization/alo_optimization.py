@@ -8,11 +8,15 @@ Focus: 1–10 MHz frequency range (sub-bands 1–5 MHz and 5–10 MHz).
 
 Decision variables
 ------------------
-  N_o       : outrigger sub-array side length  {1, 2, 3, 4, 5, 6}
   geom_type : 'symmetric'  — all 4 arms equal
               'asymmetric' — N=short, E=long, S/W=intermediate
   d_max     : [symmetric]  max arm distance from core edge [m]
   d_short, d_long, d_int : [asymmetric] per-arm max distances [m]
+
+Fixed (not optimised)
+---------------------
+  N_o = 4  (4×4 outrigger sub-array, fixed for 128×128 core)
+  Core = 128×128
 
 Objectives  (equal weight 0.25)
 --------------------------------
@@ -23,7 +27,7 @@ Objectives  (equal weight 0.25)
 
 Hard constraint
 ---------------
-  B_max ≤ 15 km   (limits cable runs and deployment footprint)
+  B_max ≤ 11 km   (limits cable runs and deployment footprint)
 """
 
 import os
@@ -73,7 +77,11 @@ CORE_N         = 128           # fixed core size (128×128)
 EDGE_M         = core_edge_m(CORE_N)    # 327.025 m
 N_ARMS         = 4             # always 4 cardinal arms
 N_OUT_PER_ARM  = 4             # 4 outriggers per arm (evenly spaced to d_max)
-MAX_BL_M       = 15_000.0      # constraint: B_max ≤ 15 km
+# Outrigger sub-array size: fixed by core size
+#   128×128 core → 4×4 outrigger sub-array (N_O = 4)
+#    32×32  core → 2×2 outrigger sub-array (N_O = 2)
+N_O            = 4             # fixed for 128×128 core (not a decision variable)
+MAX_BL_M       = 11_000.0     # hard constraint: B_max ≤ 11 km
 T_REF_H        = 100.0         # reference integration time
 OBJ_W          = [0.25, 0.25, 0.25, 0.25]   # equal weights
 N_GRID_OPT     = 128           # AF grid during search (speed)
@@ -83,12 +91,15 @@ BW_REF         = 5.0           # reference bandwidth [MHz]
 REF_FREQ_FULL  = 30.0          # for comparison with trade-off configs
 N_TOP          = 5             # detailed analysis for top-N configs
 
-# ── Search space ──────────────────────────────────────────────────────────────
-NO_VALUES    = [1, 2, 3, 4, 5, 6]
-SYM_D_MAX    = [500, 1000, 2000, 3000, 5000, 7000]      # m from edge
-ASYM_SHORT   = [250, 500, 1000, 2000]                    # N arm  [m from edge]
-ASYM_LONG    = [3000, 5000, 7000, 10000]                 # E arm  [m from edge]
-ASYM_INT     = [1000, 2000, 3000, 5000]                  # S/W arms [m from edge]
+# ── Search space  (N_o is no longer a variable — fixed by core size) ──────────
+# Symmetric: B_max = 2*(EDGE_M + d_max) + CORE_N*D_SPACE/2
+#   → d_max ≤ (11000 - 329)/2 - 327 ≈ 5009 m  →  cap at 5000 m
+SYM_D_MAX    = [500, 1000, 2000, 3000, 4000, 5000]     # m from edge
+# Asymmetric: B_max ≈ (EDGE_M+d_long) + (EDGE_M+d_int) + CORE_N*D_SPACE/2
+#   ≈ d_long + d_int + 983  ≤ 11000  →  d_long + d_int ≤ 10017
+ASYM_SHORT   = [250, 500, 1000, 2000]                   # N arm  [m from edge]
+ASYM_LONG    = [3000, 5000, 7000, 8000, 9000]           # E arm  [m from edge]
+ASYM_INT     = [500, 1000, 2000, 3000]                  # S/W arms [m from edge]
 
 # Consistent colours for top-5 ranking
 TOP_COLORS = ["#FFD700", "#C0C0C0", "#CD7F32", "#4FC3F7", "#F06292"]
@@ -100,11 +111,13 @@ def _arm_dists(d_max_edge):
     return [d_max_edge * (i + 1) / N_OUT_PER_ARM for i in range(N_OUT_PER_ARM)]
 
 
-def build_array(N_o, arm_specs):
+def build_array(arm_specs, n_o=None):
     """
     Build array positions given arm_specs = list of (angle_rad, [dists_from_edge]).
+    n_o: outrigger sub-array side (defaults to global N_O).
     Returns (pos_enu [N×3], centres [(cx,cy),...]).
     """
+    n_o = n_o or N_O
     parts = [rect_array_enu(CORE_N, D_SPACE)]
     centres = []
     for ang, dists in arm_specs:
@@ -113,24 +126,26 @@ def build_array(N_o, arm_specs):
             cx = dc * np.cos(ang)
             cy = dc * np.sin(ang)
             centres.append((cx, cy))
-            parts.append(rect_array_enu(N_o, D_SPACE, cx, cy))
+            parts.append(rect_array_enu(n_o, D_SPACE, cx, cy))
     return np.vstack(parts), centres
 
 
-def build_symmetric(N_o, d_max):
+def build_symmetric(d_max, n_o=None):
+    """Symmetric ring: 4 equal arms, 4 outriggers per arm to d_max from edge."""
     angles = [np.pi/2, 0.0, 3*np.pi/2, np.pi]   # N, E, S, W
     specs  = [(ang, _arm_dists(d_max)) for ang in angles]
-    return build_array(N_o, specs)
+    return build_array(specs, n_o)
 
 
-def build_asymmetric(N_o, d_short, d_long, d_int):
+def build_asymmetric(d_short, d_long, d_int, n_o=None):
+    """Asymmetric cross: N=short, E=long, S/W=intermediate."""
     specs = [
-        (np.pi/2, _arm_dists(d_short)),     # N = short
-        (0.0,     _arm_dists(d_long)),      # E = long
+        (np.pi/2,   _arm_dists(d_short)),   # N = short
+        (0.0,       _arm_dists(d_long)),    # E = long
         (3*np.pi/2, _arm_dists(d_int)),     # S = intermediate
-        (np.pi,   _arm_dists(d_int)),       # W = intermediate
+        (np.pi,     _arm_dists(d_int)),     # W = intermediate
     ]
-    return build_array(N_o, specs)
+    return build_array(specs, n_o)
 
 
 def max_baseline(centres):
@@ -148,7 +163,7 @@ def max_baseline(centres):
 
 # ── Metric evaluation ─────────────────────────────────────────────────────────
 
-def eval_metrics_fast(N_o, pos, centres, targets_low):
+def eval_metrics_fast(pos, centres, targets_low, n_o=None):
     """
     Evaluate metrics quickly for one configuration.
     targets_low : targets with frequency_MHz in [1, 10].
@@ -160,7 +175,7 @@ def eval_metrics_fast(N_o, pos, centres, targets_low):
     if B_max > MAX_BL_M:
         return None  # violates constraint
 
-    meta = dict(core_n=CORE_N, out_n=N_o, out_centres=centres,
+    meta = dict(core_n=CORE_N, out_n=(n_o or N_O), out_centres=centres,
                 N_total=N, B_max_m=B_max)
 
     # Thermal sensitivity at FC_REF MHz, BW_REF MHz BW, 100 h
@@ -217,41 +232,41 @@ def run_grid_search(targets):
     n_skip = 0
     t0 = time.time()
 
-    # ── Symmetric configs ────────────────────────────────────────────────────
-    total_sym = len(NO_VALUES) * len(SYM_D_MAX)
-    print(f"  Symmetric configs: {total_sym}")
-    for N_o, d_max in itertools.product(NO_VALUES, SYM_D_MAX):
-        pos, centres = build_symmetric(N_o, d_max)
-        res = eval_metrics_fast(N_o, pos, centres, targets_low)
+    # ── Symmetric configs (N_o = 4 fixed for 128×128 core) ───────────────────
+    total_sym = len(SYM_D_MAX)
+    print(f"  Symmetric configs: {total_sym}  (N_o={N_O} fixed)")
+    for d_max in SYM_D_MAX:
+        pos, centres = build_symmetric(d_max)
+        res = eval_metrics_fast(pos, centres, targets_low)
         n_eval += 1
         if res is None:
             n_skip += 1
             continue
         row = dict(
-            cfg_id   = f"sym_no{N_o}_d{int(d_max)}",
+            cfg_id   = f"sym_d{int(d_max)}",
             geom     = "symmetric",
-            N_o      = N_o,
+            N_o      = N_O,
             d_max_m  = d_max,
             d_short  = d_max, d_long = d_max, d_int = d_max,
         )
         row.update(res)
         rows.append(row)
 
-    # ── Asymmetric cross configs ─────────────────────────────────────────────
-    total_asym = len(NO_VALUES) * len(ASYM_SHORT) * len(ASYM_LONG) * len(ASYM_INT)
-    print(f"  Asymmetric configs: {total_asym}  (many will be filtered by B_max ≤ 15 km)")
-    for N_o, ds, dl, di in itertools.product(NO_VALUES, ASYM_SHORT,
-                                              ASYM_LONG, ASYM_INT):
-        pos, centres = build_asymmetric(N_o, ds, dl, di)
-        res = eval_metrics_fast(N_o, pos, centres, targets_low)
+    # ── Asymmetric cross configs (N_o = 4 fixed) ─────────────────────────────
+    total_asym = len(ASYM_SHORT) * len(ASYM_LONG) * len(ASYM_INT)
+    print(f"  Asymmetric configs: {total_asym}  "
+          f"(filtered by B_max ≤ {MAX_BL_M/1e3:.0f} km)")
+    for ds, dl, di in itertools.product(ASYM_SHORT, ASYM_LONG, ASYM_INT):
+        pos, centres = build_asymmetric(ds, dl, di)
+        res = eval_metrics_fast(pos, centres, targets_low)
         n_eval += 1
         if res is None:
             n_skip += 1
             continue
         row = dict(
-            cfg_id   = f"asym_no{N_o}_sh{int(ds)}_lo{int(dl)}_int{int(di)}",
+            cfg_id   = f"asym_sh{int(ds)}_lo{int(dl)}_int{int(di)}",
             geom     = "asymmetric",
-            N_o      = N_o,
+            N_o      = N_O,
             d_max_m  = dl,   # longest arm
             d_short  = ds, d_long = dl, d_int = di,
         )
@@ -260,7 +275,7 @@ def run_grid_search(targets):
 
     elapsed = time.time() - t0
     print(f"  Evaluated {n_eval} configs in {elapsed:.1f}s; "
-          f"{n_skip} skipped (B_max > 15 km); "
+          f"{n_skip} skipped (B_max > {MAX_BL_M/1e3:.0f} km); "
           f"{len(rows)} valid")
     return pd.DataFrame(rows)
 
@@ -317,6 +332,147 @@ def compute_pareto_front(df):
 
 # ── Detailed analysis for top configs ─────────────────────────────────────────
 
+def _scatter_layout_plot(pos, centres, row, N, B_max, rank, sdir,
+                         filename="layout.png"):
+    """
+    Scatter-style layout plot:
+      • Blue scatter  : core element positions (no per-element text)
+      • Red scatter   : outrigger element positions (no per-element text)
+      • Thin dashed lines from core centre to each outrigger cluster centre
+      • Distance-from-edge labels at each outrigger cluster (one label per cluster)
+      • Arm direction labels (N / E / S / W)
+      • Info box in upper-right with all configuration details
+    """
+    N_core = CORE_N ** 2
+    N_o    = int(row["N_o"])
+    scale  = 1e3
+    unit   = "km"
+
+    # Arm direction snap (group outrigger centres by cardinal angle)
+    arm_groups: dict = {}
+    for cx, cy in centres:
+        r   = np.hypot(cx, cy)
+        ang = round(np.degrees(np.arctan2(cy, cx)) / 90) * 90 % 360
+        arm_groups.setdefault(ang, []).append((cx, cy, r))
+
+    max_reach = max(r for v in arm_groups.values() for _, _, r in v)
+    lim = max_reach / scale * 1.30
+
+    fig, ax = plt.subplots(figsize=(9, 9))
+
+    # Core elements — dense scatter, small dots
+    ax.scatter(pos[:N_core, 0] / scale, pos[:N_core, 1] / scale,
+               s=0.3, c="steelblue", alpha=0.7, rasterized=True,
+               label=f"Core {CORE_N}×{CORE_N}")
+
+    # Outrigger elements — slightly larger, distinct colour
+    ax.scatter(pos[N_core:, 0] / scale, pos[N_core:, 1] / scale,
+               s=4, c="tomato", alpha=0.9, rasterized=True,
+               label=f"Outrigger {N_o}×{N_o}")
+
+    # Arm lines and distance labels
+    arm_dir_labels = {0: "E", 90: "N", 180: "W", 270: "S"}
+    label_offsets  = {0: (0.04, 0.0), 90: (0.0, 0.04),
+                      180: (-0.04, 0.0), 270: (0.0, -0.04)}
+    text_va = {0: "center", 90: "bottom", 180: "center", 270: "top"}
+    text_ha = {0: "left",   90: "center", 180: "right",  270: "center"}
+
+    for ang_deg, olist in arm_groups.items():
+        ang_rad = np.radians(ang_deg)
+        dx, dy  = np.cos(ang_rad), np.sin(ang_rad)
+        olist_s = sorted(olist, key=lambda x: x[2])
+
+        # Arm line: core edge → farthest outrigger centre
+        edge_s = EDGE_M / scale
+        far_s  = olist_s[-1][2] / scale
+        ax.plot([dx * edge_s, dx * far_s],
+                [dy * edge_s, dy * far_s],
+                color="steelblue", lw=0.7, ls="--", alpha=0.45, zorder=1)
+
+        # Distance label at each outrigger cluster (one label per cluster)
+        off_x, off_y = label_offsets.get(ang_deg, (0, 0.04))
+        for cx_m, cy_m, r_m in olist_s:
+            d_from_edge_km = (r_m - EDGE_M) / 1e3
+            cx_s, cy_s = cx_m / scale, cy_m / scale
+            ax.annotate(
+                f"{d_from_edge_km:.3g} km",
+                xy=(cx_s, cy_s),
+                xytext=(cx_s + off_x * lim, cy_s + off_y * lim),
+                fontsize=7.5, color="darkgreen", fontweight="bold",
+                ha=text_ha.get(ang_deg, "center"),
+                va=text_va.get(ang_deg, "center"),
+                arrowprops=dict(arrowstyle="-", color="darkgreen",
+                                lw=0.5, alpha=0.5),
+                zorder=6,
+            )
+
+        # Arm direction label at tip
+        tip_s = far_s * 1.06
+        albl  = arm_dir_labels.get(ang_deg, "")
+        ax.text(dx * tip_s, dy * tip_s, albl,
+                ha=text_ha.get(ang_deg, "center"),
+                va=text_va.get(ang_deg, "center"),
+                fontsize=10, color="steelblue", fontweight="bold")
+
+    # Axes formatting
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+    ax.set_xlabel(f"East  [{unit}]", fontsize=11)
+    ax.set_ylabel(f"North  [{unit}]", fontsize=11)
+    ax.set_aspect("equal")
+    ax.grid(True, alpha=0.2)
+    ax.legend(loc="lower left", fontsize=9, markerscale=5)
+    # Colour-coded border for ranking
+    if rank is not None:
+        for spine in ax.spines.values():
+            spine.set_edgecolor(TOP_COLORS[rank])
+            spine.set_linewidth(2.5)
+
+    # ── Info box ──────────────────────────────────────────────────────────────
+    geom_str = "Symmetric Ring" if row["geom"] == "symmetric" else "Asymmetric Cross"
+    if row["geom"] == "asymmetric":
+        arm_info = (f"  N arm: {row['d_short']/1e3:.3g} km (short)\n"
+                    f"  E arm: {row['d_long']/1e3:.3g} km (long)\n"
+                    f"  S,W arms: {row['d_int']/1e3:.3g} km (int.)")
+    else:
+        arm_info = f"  All arms: {row['d_max_m']/1e3:.3g} km (equal)"
+    rank_str = f"Rank {rank+1}" if rank is not None else ""
+    info_text = (
+        f"{'─'*28}\n"
+        f"  {rank_str}  F = {row['F_score']:.4f}\n"
+        f"{'─'*28}\n"
+        f"  Geometry  : {geom_str}\n"
+        f"  Core      : {CORE_N}×{CORE_N}\n"
+        f"  Outrigger : {N_o}×{N_o} per cluster\n"
+        f"  N_o/arm   : {N_OUT_PER_ARM} clusters\n"
+        f"  N_total   : {N}\n"
+        f"  B_max     : {B_max/1e3:.2f} km\n"
+        f"  σ_total   : {row['sigma_total_mJy']:.4f} mJy\n"
+        f"  MSL       : {row['MSL_dB']:.1f} dB\n"
+        f"  n_det(low): {int(row['n_det_low'])}\n"
+        f"  Arm distances (from edge):\n"
+        f"{arm_info}"
+    )
+    ax.text(0.985, 0.985, info_text,
+            transform=ax.transAxes,
+            fontsize=7.5, verticalalignment="top", horizontalalignment="right",
+            fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow",
+                      edgecolor="gray", alpha=0.92, lw=0.8),
+            zorder=10)
+
+    ax.set_title(
+        f"Array Layout — {geom_str}  ({CORE_N}×{CORE_N} core + "
+        f"{len(centres)}×{N_o}×{N_o} outriggers)",
+        fontsize=10, fontweight="bold",
+        color=TOP_COLORS[rank] if rank is not None else "black"
+    )
+    plt.tight_layout()
+    plt.savefig(os.path.join(sdir, filename), dpi=130,
+                bbox_inches="tight")
+    plt.close()
+
+
 def detailed_analysis_config(rank, row, targets):
     """
     Full beam analysis + sensitivity per config + UV 100h for one top config.
@@ -324,9 +480,9 @@ def detailed_analysis_config(rank, row, targets):
     print(f"  Rank {rank+1}: {row['cfg_id']}  (F={row['F_score']:.4f})")
     N_o = int(row["N_o"])
     if row["geom"] == "symmetric":
-        pos, centres = build_symmetric(N_o, row["d_max_m"])
+        pos, centres = build_symmetric(row["d_max_m"])
     else:
-        pos, centres = build_asymmetric(N_o, row["d_short"],
+        pos, centres = build_asymmetric(row["d_short"],
                                         row["d_long"], row["d_int"])
 
     N     = len(pos)
@@ -336,62 +492,8 @@ def detailed_analysis_config(rank, row, targets):
     sdir  = os.path.join(PLOT_ROOT, "top_configs", f"rank{rank+1}")
     os.makedirs(sdir, exist_ok=True)
 
-    # ── Layout schematic ──────────────────────────────────────────────────────
-    scale = 1e3
-    fig, ax = plt.subplots(figsize=(8, 8), facecolor="#e8e8e8")
-    ax.set_facecolor("white")
-    arm_groups = {}
-    for cx, cy in centres:
-        r   = np.hypot(cx, cy)
-        ang = round(np.degrees(np.arctan2(cy, cx)) / 90) * 90 % 360
-        arm_groups.setdefault(ang, []).append((cx/scale, cy/scale, r))
-
-    edge_s   = EDGE_M / scale
-    max_s    = max(r for v in arm_groups.values() for _, _, r in v) / scale
-    out_box  = max_s * 0.04
-
-    for ang_deg, olist in arm_groups.items():
-        ang_rad = np.radians(ang_deg)
-        dx, dy  = np.cos(ang_rad), np.sin(ang_rad)
-        olist_s = sorted(olist, key=lambda x: x[2])
-        far_s   = olist_s[-1][2] / scale
-        ax.plot([dx*edge_s, dx*far_s], [dy*edge_s, dy*far_s],
-                color="steelblue", lw=5, zorder=2, solid_capstyle="butt")
-        for cx_s, cy_s, r_m in olist_s:
-            rect = plt.Rectangle((cx_s-out_box, cy_s-out_box),
-                                  2*out_box, 2*out_box,
-                                  lw=2, edgecolor="#cc0000", facecolor="white",
-                                  zorder=5)
-            ax.add_patch(rect)
-            d_edge = r_m - EDGE_M
-            ax.text(cx_s, cy_s+out_box*1.5,
-                    f"{d_edge/1e3:.2g}km", ha="center", va="bottom",
-                    fontsize=8, color="darkgreen", fontweight="bold", zorder=6)
-            ax.text(cx_s+out_box*1.2, cy_s, f"{N_o}×{N_o}",
-                    ha="left", va="center", fontsize=8,
-                    color="#cc0000", fontweight="bold", zorder=6)
-
-    cr = plt.Rectangle((-edge_s, -edge_s), 2*edge_s, 2*edge_s,
-                        lw=2, edgecolor="steelblue", facecolor="#d0e8f8", zorder=4)
-    ax.add_patch(cr)
-    ax.text(0, 0, f"{CORE_N}×{CORE_N}", ha="center", va="center",
-            fontsize=13, fontweight="bold", color="steelblue", zorder=7)
-
-    lim_x = max_s*1.35; lim_y = max_s*1.10
-    ax.set_xlim(-lim_x, lim_x); ax.set_ylim(-lim_y, lim_y)
-    ax.set_xlabel("East [km]"); ax.set_ylabel("North [km]")
-    ax.set_aspect("equal"); ax.grid(True, alpha=0.2)
-    title_type = "Symmetric Ring" if row["geom"] == "symmetric" else "Asymmetric Cross"
-    ax.set_title(f"Rank {rank+1} — {title_type}\n"
-                 f"{row['cfg_id']}\n"
-                 f"N={N}, B_max={B_max/1e3:.2f} km, F={row['F_score']:.4f}",
-                 fontsize=9, fontweight="bold", color=TOP_COLORS[rank])
-    for spine in ax.spines.values():
-        spine.set_edgecolor(TOP_COLORS[rank]); spine.set_linewidth(2)
-    plt.tight_layout()
-    plt.savefig(os.path.join(sdir, "layout.png"), dpi=120,
-                bbox_inches="tight", facecolor="white")
-    plt.close()
+    # ── Layout: scatter + info box (no per-element text) ─────────────────────
+    _scatter_layout_plot(pos, centres, row, N, B_max, rank, sdir)
 
     # ── Beam patterns at all 4 bands ──────────────────────────────────────────
     fig, axes = plt.subplots(4, 2, figsize=(11, 18))
@@ -876,10 +978,8 @@ def plot_vs_tradeoff(df, top5_details, targets):
     # Config F: asymmetric, N_o=4, d_short=1000m, d_long=5000m, d_int=3000m
     tradeoff_cfgs = []
     for label, pos, centres in [
-        ("Config D\n(Ring128×128 long)",
-         *build_symmetric(4, 5000)),
-        ("Config F\n(Cross128×128)",
-         *build_asymmetric(4, 1000, 5000, 3000)),
+        ("Config D\n(Ring128×128 long)", *build_symmetric(5000)),
+        ("Config F\n(Cross128×128)",     *build_asymmetric(1000, 5000, 3000)),
     ]:
         N     = len(pos)
         B_max = max_baseline(centres)
@@ -889,15 +989,14 @@ def plot_vs_tradeoff(df, top5_details, targets):
     # Best optimizer result
     best_row = df.iloc[0]
     if best_row["geom"] == "symmetric":
-        opt_pos, opt_ctr = build_symmetric(int(best_row["N_o"]), best_row["d_max_m"])
+        opt_pos, opt_ctr = build_symmetric(best_row["d_max_m"])
     else:
-        opt_pos, opt_ctr = build_asymmetric(int(best_row["N_o"]),
-                                             best_row["d_short"],
+        opt_pos, opt_ctr = build_asymmetric(best_row["d_short"],
                                              best_row["d_long"],
                                              best_row["d_int"])
     opt_N     = len(opt_pos)
     opt_B_max = max_baseline(opt_ctr)
-    opt_meta  = dict(core_n=CORE_N, out_n=int(best_row["N_o"]),
+    opt_meta  = dict(core_n=CORE_N, out_n=N_O,
                      out_centres=opt_ctr, N_total=opt_N, B_max_m=opt_B_max)
 
     # Count feasible detections for each
@@ -1000,8 +1099,10 @@ from close-in exoplanets is predicted.
 
 DECISION VARIABLES
 ------------------
-  1. N_o  ∈ {{1, 2, 3, 4, 5, 6}}
-     Outrigger sub-array side length (total outrigger elements = N_o² per sub-array).
+  1. N_o  = 4  (FIXED — not a decision variable)
+     Determined by core size: 128×128 core → 4×4 outrigger sub-array.
+     (32×32 core → 2×2 outrigger sub-array — not explored here since core is fixed.)
+     Total outrigger elements per sub-array = N_o² = 16.
 
   2. Arm geometry:
        • 'symmetric'  — all 4 arms (N/E/S/W) have equal spacing to d_max
@@ -1207,7 +1308,7 @@ FINAL RECOMMENDATION
   d_max = {best['d_max_m']/1e3:.2f} km from the core edge, B_max = {best['B_max_m']/1e3:.2f} km.
 
   This represents the best scientifically achievable configuration within
-  the 15 km baseline constraint for the 1–10 MHz frequency focus.
+  the 11 km baseline constraint for the 1–10 MHz frequency focus.
 """
     with open(os.path.join(INTERP_DIR, "final_conclusion.txt"), "w") as fh:
         fh.write(text)

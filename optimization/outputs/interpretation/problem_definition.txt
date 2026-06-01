@@ -11,8 +11,10 @@ from close-in exoplanets is predicted.
 
 DECISION VARIABLES
 ------------------
-  1. N_o  ∈ {1, 2, 3, 4, 5, 6}
-     Outrigger sub-array side length (total outrigger elements = N_o² per sub-array).
+  1. N_o  = 4  (FIXED — not a decision variable)
+     Determined by core size: 128×128 core → 4×4 outrigger sub-array.
+     (32×32 core → 2×2 outrigger sub-array — not explored here since core is fixed.)
+     Total outrigger elements per sub-array = N_o² = 16.
 
   2. Arm geometry:
        • 'symmetric'  — all 4 arms (N/E/S/W) have equal spacing to d_max

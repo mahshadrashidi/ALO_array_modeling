@@ -1,9 +1,8 @@
-Rank 3: asym_no6_sh250_lo10000_int1000
+Rank 3: asym_sh1000_lo9000_int500
 ============================================================
 
 FEASIBLE (<100h):
   55 Cnc b
-  CoRoT-1 b
   HAT-P-21 b
   HAT-P-22 b
   HAT-P-49 b
@@ -39,6 +38,7 @@ FEASIBLE (<100h):
 
 ASPIRATIONAL (100–1000h):
   51 Peg b
+  CoRoT-1 b
   HAT-P-8 b
   HATS-35 b
   HD 118203 b
@@ -49,7 +49,6 @@ ASPIRATIONAL (100–1000h):
   TOI-1408 b
   TOI-1820 b
   TOI-2193 b
-  TOI-2803 b
   TOI-564 b
   TrES-5 b
   WASP-104 b

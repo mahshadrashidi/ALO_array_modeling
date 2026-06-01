@@ -4,21 +4,21 @@ FINAL CONCLUSION: OPTIMIZATION vs TRADE-OFF COMPARISON
 
 OPTIMIZED BEST CONFIGURATION
 -----------------------------
-  asym_no6_sh500_lo10000_int1000
-  N_o = 6, asymmetric geometry
-  N_total = 16960, B_max = 11.98 km
-  F score = 0.8709
+  asym_sh500_lo9000_int500
+  N_o = 4, asymmetric geometry
+  N_total = 16640, B_max = 10.48 km
+  F score = 0.9496
 
 COMPARISON WITH PREVIOUS TRADE-OFF RESULTS
 ------------------------------------------
                         Optimised     Config D    Config F
                           (best)     (trade-off) (trade-off)
-  N_total                    16960       16640       16640
-  B_max [km]                 11.98       10.98        8.98
+  N_total                    16640       16640       16640
+  B_max [km]                 10.48       10.98        8.98
   n_det (1–10 MHz)               2           2           2
-  n_det (all bands)             34          33          33
-  σ_total(7.5MHz) [mJy]     9.5329      9.7158      9.7158
-  MSL [dB]                    -4.4        -3.8        -4.2
+  n_det (all bands)             33          33          33
+  σ_total(7.5MHz) [mJy]     9.7164      9.7158      9.7158
+  MSL [dB]                    -4.3        -3.8        -4.2
 
 VERDICT: The optimized result AGREES WITH the trade-off conclusion.
 ============================================================
@@ -46,7 +46,7 @@ The optimization agrees with the trade-off conclusion because:
 FINAL RECOMMENDATION
 --------------------
   Primary science configuration: symmetric ring, N_o as chosen,
-  d_max = 10.00 km from the core edge, B_max = 11.98 km.
+  d_max = 9.00 km from the core edge, B_max = 10.48 km.
 
   This represents the best scientifically achievable configuration within
-  the 15 km baseline constraint for the 1–10 MHz frequency focus.
+  the 11 km baseline constraint for the 1–10 MHz frequency focus.

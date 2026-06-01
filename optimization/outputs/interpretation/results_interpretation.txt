@@ -4,53 +4,53 @@ ALO ARRAY OPTIMIZATION — RESULTS INTERPRETATION
 
 SEARCH SUMMARY
 --------------
-  Valid configurations evaluated : 396
-    Symmetric ring               : 36
-    Asymmetric cross             : 360
+  Valid configurations evaluated : 74
+    Symmetric ring               : 6
+    Asymmetric cross             : 68
   Hard constraint (B_max ≤ 15km) filtered additional configs.
 
 BEST CONFIGURATION (Rank 1)
 ----------------------------
-  Config ID : asym_no6_sh500_lo10000_int1000
+  Config ID : asym_sh500_lo9000_int500
   Geometry  : asymmetric
-  N_o       : 6 × 6 outrigger sub-arrays
-  N_total   : 16960 elements
-  B_max     : 11.98 km
-  F score   : 0.8709 / 1.0
+  N_o       : 4 × 4 outrigger sub-arrays
+  N_total   : 16640 elements
+  B_max     : 10.48 km
+  F score   : 0.9496 / 1.0
 
   Objectives at optimum:
     f_det  = 1.000  (n_det_low = 2)
-    f_sens = 1.000  (σ_total = 9.5329 mJy)
-    f_beam = 0.684  (MSL = -4.4 dB)
-    f_uv   = 0.800  (UV reach = 0.3 kλ)
+    f_sens = 0.997  (σ_total = 9.7164 mJy)
+    f_beam = 0.847  (MSL = -4.3 dB)
+    f_uv   = 0.954  (UV reach = 0.3 kλ)
 
 TOP-5 ANALYSIS
 --------------
-  Rank 1: asym_no6_sh500_lo10000_int1000
-    N_total = 16960,  B_max = 11.98 km
-    Feasible detections (all bands) : 34
-    Feasible detections (1–10 MHz) : 2
-    F score = 0.8709
-  Rank 2: asym_no6_sh1000_lo10000_int1000
-    N_total = 16960,  B_max = 11.98 km
-    Feasible detections (all bands) : 34
-    Feasible detections (1–10 MHz) : 2
-    F score = 0.8564
-  Rank 3: asym_no6_sh250_lo10000_int1000
-    N_total = 16960,  B_max = 11.98 km
-    Feasible detections (all bands) : 34
-    Feasible detections (1–10 MHz) : 2
-    F score = 0.8558
-  Rank 4: asym_no6_sh2000_lo10000_int1000
-    N_total = 16960,  B_max = 11.98 km
-    Feasible detections (all bands) : 34
-    Feasible detections (1–10 MHz) : 2
-    F score = 0.8234
-  Rank 5: asym_no6_sh500_lo7000_int1000
-    N_total = 16960,  B_max = 8.98 km
+  Rank 1: asym_sh500_lo9000_int500
+    N_total = 16640,  B_max = 10.48 km
     Feasible detections (all bands) : 33
     Feasible detections (1–10 MHz) : 2
-    F score = 0.8228
+    F score = 0.9496
+  Rank 2: asym_sh250_lo9000_int500
+    N_total = 16640,  B_max = 10.48 km
+    Feasible detections (all bands) : 33
+    Feasible detections (1–10 MHz) : 2
+    F score = 0.9348
+  Rank 3: asym_sh1000_lo9000_int500
+    N_total = 16640,  B_max = 10.48 km
+    Feasible detections (all bands) : 33
+    Feasible detections (1–10 MHz) : 2
+    F score = 0.9346
+  Rank 4: asym_sh500_lo9000_int1000
+    N_total = 16640,  B_max = 10.98 km
+    Feasible detections (all bands) : 33
+    Feasible detections (1–10 MHz) : 2
+    F score = 0.9321
+  Rank 5: asym_sh500_lo8000_int500
+    N_total = 16640,  B_max = 9.48 km
+    Feasible detections (all bands) : 33
+    Feasible detections (1–10 MHz) : 2
+    F score = 0.9190
 
 KEY FINDINGS
 ------------
@@ -78,6 +78,6 @@ KEY FINDINGS
      in one direction, reducing confusion in that direction only.
 
 4. Optimal N_o:
-   • N_o = 6 is found optimal; larger N_o adds elements
+   • N_o = 4 is found optimal; larger N_o adds elements
      but the marginal sensitivity gain (∝ √(N_total(N_total-1))) is <2%.
    • N_o should be chosen based on deployment mass and cost, not sensitivity.
