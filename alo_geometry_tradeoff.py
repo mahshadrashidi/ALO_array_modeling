@@ -2304,51 +2304,75 @@ def run_extended_source_analysis():
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NEW CONFIGURATIONS  (a – f)
-# Distance is measured from the edge of the core, not from the core centre.
+#
+# Distances are measured from the farthest element at the edge of the core,
+# not from the core centre.  For a core_n×core_n array with spacing d:
+#   edge distance from centre = (core_n − 1) / 2 × d
+#
 # Outrigger sub-array sizes: 2×2 for 32×32 core, 4×4 for 128×128 core.
+#
+# Configurations:
+#   a  Ring 32×32:  4 arms × 4 outriggers each at 250/500/750/1000 m from edge
+#   b  Ring 32×32:  4 arms × 4 outriggers each at 1250/2500/3750/5000 m from edge
+#   c  Ring 128×128:  4 arms × 4 outriggers at 250/500/750/1000 m from edge
+#   d  Ring 128×128:  4 arms × 4 outriggers at 1250/2500/3750/5000 m from edge
+#   e  Cross 32×32:   N short, E long, S intermediate, W intermediate
+#   f  Cross 128×128: N short, E long, S intermediate, W intermediate
 # ══════════════════════════════════════════════════════════════════════════════
 
-NEW_OUT_NSIDE   = {32: 2, 128: 4}           # outrigger sub-array side length
-NEW_SHORT_DISTS = [250, 500, 750, 1000]      # edge-based distances [m]
-NEW_LONG_DISTS  = [1250, 2500, 3750, 5000]  # edge-based distances [m]
-NEW_CROSS_N_ARM = 4                          # outrigger sub-arrays PER arm
+NEW_OUT_NSIDE   = {32: 2, 128: 4}              # outrigger sub-array side
+NEW_SHORT_DISTS = [250,  500,  750,  1000]     # short-arm distances from edge [m]
+NEW_LONG_DISTS  = [1250, 2500, 3750, 5000]    # long-arm distances from edge [m]
+NEW_INT_DISTS   = [750,  1500, 2250, 3000]    # intermediate-arm distances [m]
 
 NEW_PLOT = os.path.join(GT_PLOT, "new_configs")
 NEW_CSV  = os.path.join(GT_CSV,  "new_configs")
 os.makedirs(NEW_PLOT, exist_ok=True)
 os.makedirs(NEW_CSV,  exist_ok=True)
 
+# Arm direction angles (radians): N, E, S, W
+_ARM_N, _ARM_E, _ARM_S, _ARM_W = np.pi/2, 0.0, 3*np.pi/2, np.pi
 
-def layout_ring_edge(core_n, out_n, dist_from_edge_m):
+
+def layout_ring_multi_arm(core_n, out_n, arm_dists_from_edge_m):
     """
-    Ring: one out_n×out_n outrigger in each cardinal direction.
-    dist_from_edge_m is the gap between the outermost core element
-    and the nearest element of the outrigger sub-array.
-    Centre of each outrigger = core_edge_m(core_n) + dist_from_edge_m.
+    Ring: 4 symmetric arms (N/E/S/W), each arm containing outriggers
+    at arm_dists_from_edge_m measured from the core edge.
+    Total outriggers = 4 arms × len(arm_dists_from_edge_m).
     """
-    d = core_edge_m(core_n) + dist_from_edge_m
-    angles  = np.linspace(0, 2 * np.pi, 4, endpoint=False)
-    centres = [(d * np.cos(a), d * np.sin(a)) for a in angles]
-    parts   = [rect_array_enu(core_n, D_SPACE)]
-    for cx, cy in centres:
-        parts.append(rect_array_enu(out_n, D_SPACE, cx, cy))
+    edge   = core_edge_m(core_n)
+    parts  = [rect_array_enu(core_n, D_SPACE)]
+    centres = []
+    for ang in [_ARM_N, _ARM_E, _ARM_S, _ARM_W]:
+        for d in arm_dists_from_edge_m:
+            dc = edge + d
+            cx = dc * np.cos(ang)
+            cy = dc * np.sin(ang)
+            centres.append((cx, cy))
+            parts.append(rect_array_enu(out_n, D_SPACE, cx, cy))
     return np.vstack(parts), centres
 
 
-def layout_cross_multi_arm(core_n, out_n, arm_dists_from_edge_m):
+def layout_cross_asymmetric(core_n, out_n, arm_specs):
     """
-    Cross: 4 arms (N/S/E/W), each arm has len(arm_dists_from_edge_m) outriggers
-    equally spaced (in absolute terms: at the given distances from the core edge).
-    arm_dists_from_edge_m = e.g. [1250, 2500, 3750, 5000] m from edge.
+    Asymmetric cross: 4 arms, each with its own outrigger spacing.
+
+    arm_specs : list of (angle_rad, [distances_from_edge_m]) — one per arm.
+
+    Configuration (e/f):
+      N arm (π/2): short   — 250, 500, 750, 1000 m from edge
+      E arm (0):   long    — 1250, 2500, 3750, 5000 m from edge
+      S arm (3π/2): intermediate — 750, 1500, 2250, 3000 m from edge
+      W arm (π):   intermediate — 750, 1500, 2250, 3000 m from edge
     """
-    edge = core_edge_m(core_n)
-    dists_from_centre = [edge + d for d in arm_dists_from_edge_m]
-    arm_dirs = [(0.0, 1.0), (0.0, -1.0), (1.0, 0.0), (-1.0, 0.0)]  # N S E W
+    edge   = core_edge_m(core_n)
     parts  = [rect_array_enu(core_n, D_SPACE)]
     centres = []
-    for dx, dy in arm_dirs:
-        for dc in dists_from_centre:
-            cx, cy = dx * dc, dy * dc
+    for ang, dists in arm_specs:
+        for d in dists:
+            dc = edge + d
+            cx = dc * np.cos(ang)
+            cy = dc * np.sin(ang)
             centres.append((cx, cy))
             parts.append(rect_array_enu(out_n, D_SPACE, cx, cy))
     return np.vstack(parts), centres
@@ -2356,52 +2380,76 @@ def layout_cross_multi_arm(core_n, out_n, arm_dists_from_edge_m):
 
 def build_new_configs():
     """
-    Build all new configurations a–f and return as a dict.
-    Keys: descriptive names encoding geometry/core/distance.
+    Build 6 new configurations (a–f) and return as an ordered dict.
+
+    Ring configs (a–d): each arm has 4 outriggers at different distances.
+      All 4 arms share the same spacing → symmetric ring.
+    Cross configs (e–f): asymmetric cross with 4 different arm spacings.
+      N = short (max 1 km), E = long (max 5 km),
+      S = W = intermediate (max 3 km).
     """
     print("\n── Build new configurations (a–f) ──")
     configs = {}
 
-    for core_n, dists_list, label in [
-        (32,  NEW_SHORT_DISTS, "short"),
-        (32,  NEW_LONG_DISTS,  "long"),
-        (128, NEW_SHORT_DISTS, "short"),
-        (128, NEW_LONG_DISTS,  "long"),
-    ]:
+    # ── Ring configurations a, b, c, d ──────────────────────────────────────
+    ring_specs = [
+        ("a", 32,  NEW_SHORT_DISTS, "short", "250/500/750/1000 m from edge"),
+        ("b", 32,  NEW_LONG_DISTS,  "long",  "1.25/2.5/3.75/5 km from edge"),
+        ("c", 128, NEW_SHORT_DISTS, "short", "250/500/750/1000 m from edge"),
+        ("d", 128, NEW_LONG_DISTS,  "long",  "1.25/2.5/3.75/5 km from edge"),
+    ]
+    for cfg_id, core_n, dists, case, dist_str in ring_specs:
         out_n = NEW_OUT_NSIDE[core_n]
-        for d_m in dists_list:
-            name = f"ring_new_c{core_n}x{core_n}_out{out_n}x{out_n}_d{int(d_m)}m"
-            pos, centres = layout_ring_edge(core_n, out_n, d_m)
-            B_max = max_baseline_m(centres, core_n)
-            N_core = core_n ** 2
-            meta = dict(core_n=core_n, out_n=out_n, out_centres=centres,
-                        N_core=N_core, N_out_each=out_n**2, N_total=len(pos),
-                        dist_from_edge_m=d_m, geom="ring_new", B_max_m=B_max,
-                        label=f"Ring {core_n}×{core_n} + {out_n}×{out_n} @ "
-                              f"{d_m/1e3:.3g} km from edge ({label})")
-            configs[name] = dict(pos_enu=pos, meta=meta)
-            edge = core_edge_m(core_n)
-            centre_dist_km = (edge + d_m) / 1e3
-            print(f"  {name}: {len(pos)} elem, "
-                  f"B_max={B_max/1e3:.2f} km, "
-                  f"centre@{centre_dist_km:.3f} km")
-
-    # Cross configs e (32×32) and f (128×128)
-    arm_dists = NEW_LONG_DISTS   # [1250, 2500, 3750, 5000] m from edge
-    for core_n in [32, 128]:
-        out_n = NEW_OUT_NSIDE[core_n]
-        name  = f"cross_new_c{core_n}x{core_n}_out{out_n}x{out_n}_4arm"
-        pos, centres = layout_cross_multi_arm(core_n, out_n, arm_dists)
-        B_max = max_baseline_m(centres, core_n)
+        name  = f"ring_{cfg_id}_c{core_n}x{core_n}_out{out_n}x{out_n}_{case}"
+        pos, centres = layout_ring_multi_arm(core_n, out_n, dists)
+        B_max  = max_baseline_m(centres, core_n)
         N_core = core_n ** 2
-        meta = dict(core_n=core_n, out_n=out_n, out_centres=centres,
-                    N_core=N_core, N_out_each=out_n**2, N_total=len(pos),
-                    dist_from_edge_m=arm_dists[-1], geom="cross_new",
-                    B_max_m=B_max,
-                    label=f"Cross {core_n}×{core_n} + {out_n}×{out_n} "
-                          f"({NEW_CROSS_N_ARM}/arm, last@5 km from edge)")
+        n_out  = len(centres)   # 4 arms × 4 outriggers = 16
+        meta = dict(
+            core_n=core_n, out_n=out_n, out_centres=centres,
+            N_core=N_core, N_out_each=out_n**2, N_total=len(pos),
+            geom="ring_new", B_max_m=B_max, cfg_id=cfg_id,
+            label=(f"Config {cfg_id.upper()}: Ring {core_n}×{core_n}  "
+                   f"+ {n_out}×{out_n}×{out_n} outriggers  ({dist_str})"),
+        )
         configs[name] = dict(pos_enu=pos, meta=meta)
-        print(f"  {name}: {len(pos)} elem, B_max={B_max/1e3:.2f} km")
+        print(f"  [{cfg_id.upper()}] {name}: "
+              f"{len(pos)} elem, B_max={B_max/1e3:.2f} km, "
+              f"{n_out} outriggers (4 arms × 4)")
+
+    # ── Cross configurations e, f ────────────────────────────────────────────
+    cross_arm_specs = [
+        (_ARM_N, NEW_SHORT_DISTS),   # N arm: short
+        (_ARM_E, NEW_LONG_DISTS),    # E arm: long
+        (_ARM_S, NEW_INT_DISTS),     # S arm: intermediate
+        (_ARM_W, NEW_INT_DISTS),     # W arm: intermediate
+    ]
+    arm_labels = {
+        _ARM_N: f"N short ({NEW_SHORT_DISTS[-1]/1e3:.2g}km)",
+        _ARM_E: f"E long  ({NEW_LONG_DISTS[-1]/1e3:.2g}km)",
+        _ARM_S: f"S int   ({NEW_INT_DISTS[-1]/1e3:.2g}km)",
+        _ARM_W: f"W int   ({NEW_INT_DISTS[-1]/1e3:.2g}km)",
+    }
+    for cfg_id, core_n in [("e", 32), ("f", 128)]:
+        out_n = NEW_OUT_NSIDE[core_n]
+        name  = f"cross_{cfg_id}_c{core_n}x{core_n}_out{out_n}x{out_n}_asym"
+        pos, centres = layout_cross_asymmetric(core_n, out_n, cross_arm_specs)
+        B_max  = max_baseline_m(centres, core_n)
+        N_core = core_n ** 2
+        n_out  = len(centres)   # 4 arms × 4 outriggers = 16
+        meta = dict(
+            core_n=core_n, out_n=out_n, out_centres=centres,
+            N_core=N_core, N_out_each=out_n**2, N_total=len(pos),
+            geom="cross_new", B_max_m=B_max, cfg_id=cfg_id,
+            arm_labels=arm_labels, cross_arm_specs=cross_arm_specs,
+            label=(f"Config {cfg_id.upper()}: Cross {core_n}×{core_n}  "
+                   f"+ {n_out}×{out_n}×{out_n} outriggers  "
+                   f"(N≤1km / E≤5km / S≤3km / W≤3km from edge)"),
+        )
+        configs[name] = dict(pos_enu=pos, meta=meta)
+        print(f"  [{cfg_id.upper()}] {name}: "
+              f"{len(pos)} elem, B_max={B_max/1e3:.2f} km, "
+              f"{n_out} outriggers (4 arms × 4, asymmetric)")
 
     print(f"  Total new configurations: {len(configs)}")
     return configs
@@ -2421,18 +2469,42 @@ def plot_new_layout(name, cfg):
     pos    = cfg["pos_enu"]
     meta   = cfg["meta"]
     N_core = meta["N_core"]
+    is_cross = meta["geom"] == "cross_new"
 
-    fig, ax = plt.subplots(figsize=(7, 7))
-    ax.scatter(pos[:N_core, 0], pos[:N_core, 1],
+    scale  = 1e3 if meta["B_max_m"] > 2000 else 1.0
+    unit   = "km" if scale == 1e3 else "m"
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.scatter(pos[:N_core, 0] / scale, pos[:N_core, 1] / scale,
                s=0.5, c="steelblue", alpha=0.8,
                label=f"Core {meta['core_n']}×{meta['core_n']}")
-    ax.scatter(pos[N_core:, 0], pos[N_core:, 1],
-               s=4, c="tomato", alpha=0.9,
+    ax.scatter(pos[N_core:, 0] / scale, pos[N_core:, 1] / scale,
+               s=6, c="tomato", alpha=0.9,
                label=f"Outrigger {meta['out_n']}×{meta['out_n']}")
     for cx, cy in meta["out_centres"]:
-        ax.plot(cx, cy, "r+", ms=7, mew=1.3)
-    ax.set_xlabel("East [m]"); ax.set_ylabel("North [m]")
-    ax.set_title(f"Layout: {meta['label']}\nN = {meta['N_total']}, "
+        ax.plot(cx / scale, cy / scale, "r+", ms=8, mew=1.5)
+
+    if is_cross and "arm_labels" in meta:
+        arm_dir_labels = {
+            _ARM_N: ("N arm\n(short)",  (0,  1), "center", "bottom"),
+            _ARM_E: ("E arm\n(long)",   (1,  0), "left",   "center"),
+            _ARM_S: ("S arm\n(int.)",   (0, -1), "center", "top"),
+            _ARM_W: ("W arm\n(int.)",   (-1, 0), "right",  "center"),
+        }
+        # Find max reach of each arm for annotation position
+        for ang, dists in meta.get("cross_arm_specs", []):
+            dx, dy = np.cos(ang), np.sin(ang)
+            edge = core_edge_m(meta["core_n"])
+            far  = (edge + max(dists)) / scale
+            label_kw = arm_dir_labels.get(ang)
+            if label_kw:
+                lbl, _, ha, va = label_kw
+                ax.annotate(lbl, xy=(dx * far * 1.05, dy * far * 1.05),
+                            ha=ha, va=va, fontsize=8, color="darkred",
+                            fontweight="bold")
+
+    ax.set_xlabel(f"East [{unit}]"); ax.set_ylabel(f"North [{unit}]")
+    ax.set_title(f"{meta['label']}\nN = {meta['N_total']}, "
                  f"B_max = {meta['B_max_m']/1e3:.2f} km",
                  fontsize=9)
     ax.legend(markerscale=5, fontsize=8)
@@ -3158,18 +3230,24 @@ def run_outrigger_size_study(targets):
 
     ELEM_MASS_KG = 1.5   # kg per dipole element (estimated)
     core_n = 128
-    arm_dists_from_edge = [1250, 2500, 3750, 5000]
-    edge   = core_edge_m(core_n)
-    arm_dists_m = [edge + d for d in arm_dists_from_edge]
+    # Use the asymmetric cross layout matching config f
+    cross_arm_specs_so = [
+        (_ARM_N, NEW_SHORT_DISTS),
+        (_ARM_E, NEW_LONG_DISTS),
+        (_ARM_S, NEW_INT_DISTS),
+        (_ARM_W, NEW_INT_DISTS),
+    ]
 
     rows = []
     for n_o in range(1, 9):
-        arm_dirs = [(0.0, 1.0), (0.0, -1.0), (1.0, 0.0), (-1.0, 0.0)]
         parts    = [rect_array_enu(core_n, D_SPACE)]
         centres  = []
-        for dx, dy in arm_dirs:
-            for dc in arm_dists_m:
-                cx, cy = dx * dc, dy * dc
+        edge     = core_edge_m(core_n)
+        for ang, dists in cross_arm_specs_so:
+            for d in dists:
+                dc = edge + d
+                cx = dc * np.cos(ang)
+                cy = dc * np.sin(ang)
                 centres.append((cx, cy))
                 parts.append(rect_array_enu(n_o, D_SPACE, cx, cy))
         pos   = np.vstack(parts)
